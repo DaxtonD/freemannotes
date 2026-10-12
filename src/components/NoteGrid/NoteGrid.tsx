@@ -1363,6 +1363,43 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// arrive via WS before the grid is safe to show, so we extend the stall
 	// timeout to 3 minutes — the shimmer overlay already communicates progress.
 	const SHIMMER_STALL_TIMEOUT_MS = props.isPostImportSync ? 3 * 60 * 1000 : 5000;
+
+// ── Deciding which notes get a live connection ───────────────────────────────
+//
+// How long scrolling has to STOP before we act on what is on screen.
+//
+// Without this, a fast flick down the grid sweeps the viewport across every note
+// and asks for a connection for each one — the exact stampede this whole change
+// exists to stop, just triggered by scrolling instead of by booting.
+//
+// The first attempt at this timed each CARD holding still instead, and it did not
+// work: measured on a dev server, scrolling the grid rapidly without pausing still
+// flooded the server with room loads. The reason is that `rootMargin` is a whole
+// viewport tall, so a card entering that band stays intersecting for roughly two
+// screen-heights of travel — comfortably longer than any per-element window, even
+// at flick speed. The element was never the thing holding still. The SCROLL is.
+//
+// So: the visible set is tracked continuously and accurately, and acting on it is
+// deferred until the scroll goes quiet. A flick now costs nothing no matter how
+// long each card spends inside the margin.
+const SCROLL_IDLE_PUBLISH_MS = 250;
+
+// How far outside the viewport still counts as "on screen", as a fraction of
+// viewport height. Connecting slightly ahead of arrival means a note is already
+// synced by the time you can read it, instead of visibly updating once you get
+// there.
+const VIEWPORT_CONNECT_OVERSCAN_RATIO = 1;
+
+// How many of your most recently opened notes stay connected wherever they are.
+//
+// This is here because people put their most-used notes at the TOP and the BOTTOM
+// of the grid — the two fastest places to reach — and a purely viewport-driven
+// pool would leave the bottom ones cold until you scrolled to them. Seeding from
+// lastAccessedAt costs no new tracking (it is already in every note's metadata,
+// and documents are still loaded eagerly from IndexedDB, so it is known at ~390 ms
+// before any socket decision is made) and makes the behaviour identical on every
+// launch rather than depending on what you happened to scroll past.
+const RECENT_CONNECTION_SEED_COUNT = 8;
 	const [shimmerStalled, setShimmerStalled] = React.useState(false);
 	React.useEffect(() => {
 		if (allDocsLoaded) {
@@ -2927,7 +2964,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			if (pendingDocLoadsRef.current.has(id)) continue;
 			pendingDocLoadsRef.current.add(id);
 			void manager
-				.getDocWithSync(id)
+				// Documents stay eager, sockets do not. Cards render correctly from
+				// IndexedDB at ~390 ms and every measured report shows every room cached
+				// locally, so the grid wants the CONTENTS of each note, not a live session
+				// with the server for all ninety-odd of them. Which notes get a socket is
+				// decided by what is actually on screen (see the viewport effect below) plus
+				// the rooms DocumentManager connects regardless — anything with unsent local
+				// edits, anything with no local content at all, and the registries.
+				.getDocWithSync(id, { connect: false })
 				.then((doc) => {
 					setDocsById((previous) => (previous[id] === doc ? previous : { ...previous, [id]: doc }));
 				})
@@ -2939,6 +2983,153 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				});
 		}
 	}, [manager, noteOrder, orderedIds, sharedAliasSignature, sharedNoteIdSet]);
+
+	// ── Report which notes are on screen, so they are the ones that connect ──
+	//
+	// The loading effect above asks for documents without sockets; this is what
+	// decides where the sockets go. Three inputs, in priority order: notes on
+	// screen, notes you use most, and (inside DocumentManager, not here) the
+	// rooms that connect regardless — anything holding unsent local edits,
+	// anything with no local content to draw, and the registries.
+	//
+	// An IntersectionObserver rather than arithmetic over the packed columns,
+	// because "mounted" is not "visible" here and neither is a position estimate.
+	// A column is only windowed once it holds ~18 cards, so on a 6-column desktop
+	// with 96 notes nothing is virtualized and EVERY card is mounted — deriving
+	// visibility from what is rendered would have intended all 96 and quietly
+	// changed nothing on the one device where it is easiest to notice. The
+	// observer reports what the browser can actually see, in grid and list view
+	// alike, with no parallel height math to drift out of step with the layout.
+	//
+	// The MutationObserver is the awkward but necessary half: the virtualizer
+	// mounts and unmounts cards as you scroll, and a node that appears has to be
+	// handed to the observer before it can report anything.
+	const visibleNoteIdsRef = React.useRef<Set<string>>(new Set());
+	const scrollIdleTimerRef = React.useRef<number>(0);
+	const isScrollingRef = React.useRef(false);
+	const publishedViewportSignatureRef = React.useRef<string>('');
+	const recentNoteIdsRef = React.useRef<readonly string[]>([]);
+	const recentNoteIds = React.useMemo(() => {
+		return noteSnapshots
+			.filter((note) => !note.trashed && !note.archived && Boolean(note.lastAccessedAt))
+			.slice()
+			.sort((left, right) => (left.lastAccessedAt < right.lastAccessedAt ? 1 : left.lastAccessedAt > right.lastAccessedAt ? -1 : 0))
+			.slice(0, RECENT_CONNECTION_SEED_COUNT)
+			.map((note) => note.id);
+	}, [noteSnapshots]);
+	const recentNoteIdsSignature = React.useMemo(() => recentNoteIds.join('\u001f'), [recentNoteIds]);
+	recentNoteIdsRef.current = recentNoteIds;
+
+	const publishViewportRooms = React.useCallback(() => {
+		// Deliberately does nothing while the grid is not the visible view. An
+		// editor open over the top of the grid makes every card report itself
+		// off-screen, and acting on that would close the socket for the note the
+		// user is reading. The note they opened holds its own connection; the
+		// rest keep theirs until their grace window runs out on its own.
+		if (!isGridVisible) return;
+		// Mid-scroll, note that a publish is owed and do nothing else. Opening sockets
+		// for everything the viewport sweeps across on the way to where the user is
+		// actually going is the whole failure this guards.
+		if (isScrollingRef.current) return;
+		const visible = Array.from(visibleNoteIdsRef.current).sort();
+		const signature = `${visible.join('\u001f')}||${recentNoteIdsRef.current.join('\u001f')}`;
+		if (signature === publishedViewportSignatureRef.current) return;
+		publishedViewportSignatureRef.current = signature;
+		manager.setViewportRooms(visible, recentNoteIdsRef.current);
+	}, [isGridVisible, manager]);
+
+	React.useEffect(() => {
+		publishViewportRooms();
+	}, [publishViewportRooms, recentNoteIdsSignature]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return;
+		// sectionRef, NOT gridRef. The grid container is only rendered when
+		// `visibleIds.length > 0`, so on a cold boot it does not exist yet when this
+		// effect first runs — and nothing in the dependency list changes when the notes
+		// finally arrive, so the observer would never attach and the viewport would
+		// never be reported. The result would have been a grid where only the eight
+		// recently-opened notes ever connected: no error, no warning, the feature
+		// silently doing almost nothing. The <section> is always rendered, and
+		// everything we care about is inside it, so observing it has no such window.
+		const root = sectionRef.current;
+		if (!root) return;
+
+		// The visible set is maintained continuously and accurately. Whether we ACT on
+		// it is a separate question, answered by the scroll-idle gate in
+		// publishViewportRooms — which is why there are no per-element timers here any
+		// more. Keeping the set honest and deferring the decision is simpler than
+		// trying to guess, per card, whether the user meant to stop.
+		const observer = new IntersectionObserver(
+			(entries) => {
+				let changed = false;
+				for (const entry of entries) {
+					const noteId = (entry.target as HTMLElement).dataset.noteId;
+					if (!noteId) continue;
+					if (entry.isIntersecting) {
+						if (!visibleNoteIdsRef.current.has(noteId)) changed = true;
+						visibleNoteIdsRef.current.add(noteId);
+						continue;
+					}
+					if (visibleNoteIdsRef.current.delete(noteId)) changed = true;
+				}
+				if (changed) publishViewportRooms();
+			},
+			{ rootMargin: `${Math.round(window.innerHeight * VIEWPORT_CONNECT_OVERSCAN_RATIO)}px 0px` }
+		);
+
+		const onScroll = (): void => {
+			isScrollingRef.current = true;
+			window.clearTimeout(scrollIdleTimerRef.current);
+			scrollIdleTimerRef.current = window.setTimeout(() => {
+				scrollIdleTimerRef.current = 0;
+				isScrollingRef.current = false;
+				// Publish on the way out of a scroll whether or not a change was
+				// recorded during it: the set that matters is the one we have now.
+				publishViewportRooms();
+			}, SCROLL_IDLE_PUBLISH_MS);
+		};
+		window.addEventListener('scroll', onScroll, { passive: true });
+
+		const observed = new Set<Element>();
+		const syncObservedNodes = (): void => {
+			// Array.from, not the NodeList directly: it is ArrayLike but not typed as
+			// Iterable under this tsconfig's lib set.
+			const nodes = new Set<Element>(Array.from(root.querySelectorAll('[data-note-id]')));
+			for (const node of nodes) {
+				if (observed.has(node)) continue;
+				observed.add(node);
+				observer.observe(node);
+			}
+			for (const node of observed) {
+				if (nodes.has(node)) continue;
+				observed.delete(node);
+				observer.unobserve(node);
+				const noteId = (node as HTMLElement).dataset.noteId;
+				if (!noteId) continue;
+				// An unmounted card is off screen by definition; the virtualizer only
+				// unmounts what has left the window. Waiting for an observer callback
+				// that will never come would pin it in the set forever.
+				visibleNoteIdsRef.current.delete(noteId);
+			}
+		};
+
+		syncObservedNodes();
+		publishViewportRooms();
+		const mutations = new MutationObserver(() => syncObservedNodes());
+		mutations.observe(root, { childList: true, subtree: true });
+
+		return () => {
+			window.removeEventListener('scroll', onScroll);
+			window.clearTimeout(scrollIdleTimerRef.current);
+			scrollIdleTimerRef.current = 0;
+			isScrollingRef.current = false;
+			mutations.disconnect();
+			observer.disconnect();
+			observed.clear();
+		};
+	}, [isGridVisible, props.activeWorkspaceId, props.viewMode, publishViewportRooms]);
+
 
 	// ── Track when all docs are loaded (drives shimmer + layout animations) ─
 	//

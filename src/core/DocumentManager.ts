@@ -15,12 +15,23 @@ import {
 } from './debugLogger';
 import { EMPTY_MOVE_NOTE_METADATA_MAPPING, type MoveNoteMetadataIdPair, type MoveNoteMetadataMapping } from './noteMoveMetadata';
 import { clearWorkspaceOfflineEdit, markWorkspaceOfflineEdit } from './workspaceOfflineEditMarkers';
+import { computeConnectionPool } from './roomConnectionPool';
+import {
+	clearRoomOfflineEdit,
+	hasRoomOfflineEdit,
+	isRoomOfflineEditTrackingInitialised,
+	markRoomOfflineEdit,
+	markRoomOfflineEditTrackingInitialised,
+} from './roomOfflineEditMarkers';
 import {
 	recordSyncDiagClose,
 	recordSyncDiagRoomDestroyed,
 	recordSyncDiagWatchdogRescue,
 	recordSyncDiagError,
 	recordSyncDiagIdbReady,
+	recordSyncDiagConnectionIntent,
+	recordSyncDiagLifecycle,
+	setSyncDiagLiveCountsReader,
 	recordSyncDiagRequested,
 	recordSyncDiagStatus,
 	recordSyncDiagSynced,
@@ -145,6 +156,43 @@ export class DocumentManager {
 	private static readonly CONNECT_STAGGER_WINDOW_MS = 1_500;
 	/** How often the connection watchdog sweeps. */
 	private static readonly WATCHDOG_INTERVAL_MS = 10_000;
+	/**
+	 * How long a room keeps its socket after nothing wants it any more.
+	 *
+	 * This is the answer to "what if someone scrolls the grid up and down like a game". A
+	 * note that leaves the viewport stays connected for this long, so a round trip through
+	 * the grid costs no handshakes at all, and a flick past a note costs none either because
+	 * the grid only reports a note as visible once it has held still (see NoteGrid's settle
+	 * window). The handshake path serves ~7/s, so thrash here would be worse than the
+	 * eagerness it replaces.
+	 */
+	private static readonly ROOM_INTEREST_GRACE_MS = 30_000;
+	/**
+	 * Ceiling on the warm tail — rooms kept connected that are NOT currently on screen.
+	 *
+	 * Visible rooms are never counted against it: refusing to connect something the user is
+	 * looking at would be the one unambiguous regression here. The cap exists so that
+	 * scrolling an entire workspace settles back to a steady state instead of climbing to one
+	 * socket per note, which is what browsers cap at ~200 (Firefox) / ~255 (Chromium) and
+	 * what made ~96 of them a cold-boot cost of twenty seconds.
+	 */
+	private static readonly MAX_WARM_ROOMS = 25;
+	/**
+	 * How long the one-off upgrade boot is allowed to stay eager before we trust the room
+	 * markers anyway.
+	 *
+	 * The first boot after per-room markers shipped connects every room, because an empty
+	 * marker set cannot be told apart from "nothing to send" and an edit made offline before
+	 * the markers existed would otherwise be stranded. The question is when that boot is
+	 * finished. "When every room has synced" is the honest answer and also a trap: this very
+	 * codebase has two or three rooms that are known not to sync (see the plan's step 2), plus
+	 * any room the server refuses with a 1008, so that condition can never be met on the
+	 * author's own device — the flag would stay false forever and every boot would keep paying
+	 * the full twenty-second connect bill. So: all-synced if it happens, this ceiling if it
+	 * does not. Closing the app sooner leaves the flag false and the next boot eager, which is
+	 * the safe direction to fail in.
+	 */
+	private static readonly LEGACY_FLUSH_CEILING_MS = 45_000;
 	private readonly pendingSyncQueuedAt = new Map<string, number>();
 	private readonly pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Tracks rooms whose WS provider has completed at least one sync in this session.
@@ -189,6 +237,37 @@ export class DocumentManager {
 	// for automatic updatedAt stamping. Prevents double-attaching if getDoc()
 	// is called multiple times for the same noteId.
 	private readonly updatedAtDocs = new Set<string>();
+	private readonly localEditTrackedRooms = new Set<string>();
+	/**
+	 * Room -> the last time anything wanted it connected, as epoch ms.
+	 *
+	 * Opening a socket used to be a side effect of asking for a document, which made "do not
+	 * connect this" literally unexpressable — and meant ~96 sockets into a path that serves
+	 * about 7 handshakes a second, so the note you actually opened could be 50 s down a queue
+	 * it had no way to jump. Interest is now explicit, and timestamped rather than a plain
+	 * set, because an unbounded set is the same bug wearing a hat: open fifty notes over an
+	 * afternoon and you are back to fifty sockets.
+	 *
+	 * Refreshed while a note is on screen, and on any deliberate open (the editor, an
+	 * attached drawing, a move). A room stays in the pool for ROOM_INTEREST_GRACE_MS after
+	 * interest stops, which is what makes scrolling down and straight back up free.
+	 */
+	private readonly roomInterest = new Map<string, number>();
+	/**
+	 * The room open in the editor, which is never allowed to lose its socket.
+	 *
+	 * Timestamped interest alone is wrong for this one case, and badly: interest is recorded
+	 * when a document is requested, so a note open in the editor for longer than the grace
+	 * window would have had its connection closed underneath the person typing into it. An
+	 * editor session has an explicit beginning and end, so it gets an explicit hold.
+	 */
+	private pinnedRoom: string | null = null;
+	/** When sync was first switched on this session, for the upgrade-boot ceiling above. */
+	private websocketFirstEnabledAt: number | null = null;
+	/** Rooms on screen right now. Never evicted by the cap — you are looking at them. */
+	private viewportRooms: ReadonlySet<string> = new Set<string>();
+	/** The computed outcome: rooms the pool says should hold a socket. */
+	private pooledRooms: ReadonlySet<string> = new Set<string>();
 	private connectionState: ConnectionState = 'connecting';
 	private browserOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
 	// Becomes true once the notes registry doc has been fully hydrated from
@@ -353,6 +432,7 @@ export class DocumentManager {
 			cachedDocCount: this.docs.size,
 		});
 
+		recordSyncDiagLifecycle(`workspace-switch to=${next === null ? 'null (logout)' : next.slice(0, 8)} docs=${this.docs.size}`);
 		if (next === null) {
 			// Logout / auth loss: full tear-down to free all resources.
 			this.teardownAllRooms();
@@ -371,10 +451,12 @@ export class DocumentManager {
 			for (const roomName of Array.from(this.websocketProviders.keys())) {
 				this.wsCleanup.get(roomName)?.();
 				this.wsCleanup.delete(roomName);
-				// Also remove the doc-level onAfterTransaction handler so stale closures
-				// that reference the now-destroyed WS provider can't fire later and
-				// incorrectly mark the room as pending-sync (the destroyed provider has
-				// wsconnected = undefined which is falsy).
+				// Also run the doc-level cleanup. This used to be about stale closures
+				// over a destroyed provider; the local-edit handler no longer captures
+				// one (it looks the room up), so that hazard is gone. What remains is
+				// that these handlers get re-attached on the next getOrCreateDocEntry
+				// for this room - see the early-return branch there, which is the only
+				// path a surviving doc ever takes again.
 				this.docCleanup.get(roomName)?.();
 				this.docCleanup.delete(roomName);
 				const wsProvider = this.websocketProviders.get(roomName);
@@ -394,6 +476,12 @@ export class DocumentManager {
 			this.wsEverSynced.clear();
 			this.noIdbContentRooms.clear();
 			this.updatedAtDocs.clear();
+			this.localEditTrackedRooms.clear();
+			// The viewport belonged to the workspace we just left.
+			this.roomInterest.clear();
+			this.viewportRooms = new Set<string>();
+			this.pinnedRoom = null;
+			this.pooledRooms = new Set<string>();
 			this.registryHydrated = false;
 			this.registryWsSynced = false;
 		}
@@ -419,6 +507,7 @@ export class DocumentManager {
 		const next = enabled === true;
 		if (this.websocketEnabled === next) return;
 		this.websocketEnabled = next;
+		recordSyncDiagLifecycle(`websocket-${next ? 'ENABLED' : 'DISABLED'} providers=${this.websocketProviders.size}`);
 		if (!next && typeof window !== 'undefined' && this.onlineReconnectTimer !== null) {
 			window.clearTimeout(this.onlineReconnectTimer);
 			this.onlineReconnectTimer = null;
@@ -439,6 +528,13 @@ export class DocumentManager {
 			this.emitConnectionStatus();
 			return;
 		}
+
+		if (this.websocketFirstEnabledAt === null) this.websocketFirstEnabledAt = Date.now();
+
+		// Make sure the pool's rooms actually have providers before we connect them —
+		// bootstrap disables sync, requests documents, then enables it, so this is the
+		// first point at which anything is allowed to open a socket at all.
+		this.reconcileRoomConnections();
 
 		// Registries before notes, then the notes spread out.
 		//
@@ -478,11 +574,16 @@ export class DocumentManager {
 
 		const previousRoomNames = new Set(this.externalRoomAliases.values());
 		const nextRoomNames = new Set(nextAliases.values());
+		// Counted for the report. This is the path that broke image loading in 1.21.4 by
+		// destroying rooms on every refreshNoteShareState, so how often it runs and how much
+		// it destroys is worth being able to see rather than infer.
+		let destroyedForAliases = 0;
 		for (const roomName of previousRoomNames) {
 			if (nextRoomNames.has(roomName)) continue;
 			this.pendingSyncRooms.delete(roomName);
 			if (this.docs.has(roomName)) {
-				this.destroyRoom(roomName);
+				this.destroyRoom(roomName, 'stale-alias-target');
+				destroyedForAliases++;
 			}
 		}
 
@@ -491,8 +592,12 @@ export class DocumentManager {
 			if (rawAliasRoomName === roomName) continue;
 			this.pendingSyncRooms.delete(rawAliasRoomName);
 			if (this.docs.has(rawAliasRoomName)) {
-				this.destroyRoom(rawAliasRoomName);
+				this.destroyRoom(rawAliasRoomName, 'alias-shadowed-local-room');
+				destroyedForAliases++;
 			}
+		}
+		if (destroyedForAliases > 0) {
+			recordSyncDiagLifecycle(`external-aliases destroyed=${destroyedForAliases} aliases=${nextAliases.size}`);
 		}
 
 		this.externalRoomAliases.clear();
@@ -640,6 +745,14 @@ export class DocumentManager {
 		if (existing) {
 			this.ensureStructure(existing);
 			this.ensureProvider(key, existing);
+			// Re-attach, do not assume. Both of these are idempotent, and the
+			// workspace-switch teardown deliberately KEEPS this doc while running
+			// its docCleanup - so arriving here with the handlers detached is
+			// normal, not exceptional, and the create path below never runs again
+			// for this room. updatedAt stamping was silently dead in exactly that
+			// case before these two lines existed.
+			this.ensureUpdatedAtTracking(key, existing);
+			this.ensureLocalEditTracking(key, existing);
 			return { key, doc: existing };
 		}
 
@@ -654,6 +767,7 @@ export class DocumentManager {
 		this.ensureStructure(doc);
 		this.ensureProvider(key, doc);
 		this.ensureUpdatedAtTracking(key, doc);
+		this.ensureLocalEditTracking(key, doc);
 		this.ensureConnectionWatchdog();
 		return { key, doc };
 	}
@@ -691,10 +805,25 @@ export class DocumentManager {
 		throw new Error(`Document room kept changing before sync completed: ${this.roomNameFor(raw)}`);
 	}
 
-	public async getDocWithSync(noteId: string): Promise<Y.Doc> {
+	/**
+	 * Hydrate a document from IndexedDB and, unless told otherwise, keep it connected.
+	 *
+	 * `connect: false` means "I only want to read what is already on this device" — the note
+	 * grid drawing cards, the galleries counting attachments, offline search walking every
+	 * note. Those four callers between them used to open a socket for every note in the
+	 * workspace, which is why a single offline search could re-open ~96 of them. None of them
+	 * needs a collaborative session; they need the contents of IndexedDB.
+	 *
+	 * It is not a veto. A room that qualifies under `shouldRoomConnect` for its own reasons —
+	 * unsent local edits above all — connects anyway, because the alternative is losing it.
+	 *
+	 * Defaults to `true`, so every other caller behaves exactly as it always has.
+	 */
+	public async getDocWithSync(noteId: string, options?: { connect?: boolean }): Promise<Y.Doc> {
 		const raw = this.normalizeNoteId(noteId);
 		const doc = await this.getDocReady(raw);
 		const roomName = this.roomNameFor(raw);
+		if (options?.connect !== false) this.noteRoomInterest(roomName);
 		// Track note rooms with no IDB content (empty Y.Doc stubs on fresh install).
 		// These rooms need their first WS sync before they have real content; NoteGrid
 		// holds the shimmer until pendingNoteWsSync reaches zero.
@@ -706,7 +835,13 @@ export class DocumentManager {
 				this.emitConnectionStatus();
 			}
 		}
-		this.ensureWebsocketProvider(roomName, doc);
+		// Note the ordering: the no-IDB-content bookkeeping above runs first, so a room that
+		// has nothing locally is already in noIdbContentRooms by the time shouldRoomConnect
+		// is asked about it. A fresh device therefore still connects everything, which is
+		// both what it needs and what NoteGrid's shimmer gate counts on.
+		const wantsConnection = this.shouldRoomConnect(roomName);
+		recordSyncDiagConnectionIntent(roomName, wantsConnection);
+		if (wantsConnection) this.ensureWebsocketProvider(roomName, doc);
 		// Offline-first behavior: return once the document is hydrated from IndexedDB
 		// and websocket wiring exists. Connection establishment can happen asynchronously.
 		return doc;
@@ -1158,12 +1293,12 @@ export class DocumentManager {
 		this.destroyRoom(this.roomNameFor(raw));
 	}
 
-	private destroyRoom(roomName: string): void {
+	private destroyRoom(roomName: string, reason?: string): void {
 		const doc = this.docs.get(roomName);
 		if (!doc) return;
 
 		logClientEvent('DOC_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'doc-destroy' });
-		recordSyncDiagRoomDestroyed(roomName);
+		recordSyncDiagRoomDestroyed(roomName, reason);
 		clearNoteDebugSession(roomName);
 
 		const wsProvider = this.websocketProviders.get(roomName);
@@ -1186,6 +1321,8 @@ export class DocumentManager {
 		this.pendingSyncQueuedAt.delete(roomName);
 		this.wsEverSynced.delete(roomName);
 		this.updatedAtDocs.delete(roomName);
+		this.localEditTrackedRooms.delete(roomName);
+		this.roomInterest.delete(roomName);
 
 		this.wsCleanup.get(roomName)?.();
 		this.docCleanup.get(roomName)?.();
@@ -1212,7 +1349,7 @@ export class DocumentManager {
 		// Copy keys first since destroyRoom mutates the map.
 		const rooms = Array.from(this.docs.keys());
 		for (const roomName of rooms) {
-			this.destroyRoom(roomName);
+			this.destroyRoom(roomName, 'teardown-all');
 		}
 		this.pendingSyncRooms.clear();
 		for (const timer of this.pendingSyncTimers.values()) clearTimeout(timer);
@@ -1221,6 +1358,11 @@ export class DocumentManager {
 		this.wsEverSynced.clear();
 		this.noIdbContentRooms.clear();
 		this.updatedAtDocs.clear();
+		this.localEditTrackedRooms.clear();
+		this.roomInterest.clear();
+		this.viewportRooms = new Set<string>();
+		this.pinnedRoom = null;
+		this.pooledRooms = new Set<string>();
 		this.registryHydrated = false;
 		this.registryWsSynced = false;
 	}
@@ -1448,6 +1590,184 @@ export class DocumentManager {
 		}
 	}
 
+	/** Something wants this room connected, now. Recomputes the pool and acts on it. */
+	private noteRoomInterest(roomName: string): void {
+		this.roomInterest.set(roomName, Date.now());
+		this.reconcileRoomConnections();
+	}
+
+	/**
+	 * Recompute which rooms should hold a socket. The rules themselves live in
+	 * roomConnectionPool.ts as a pure function, where they can actually be tested.
+	 *
+	 * Expiry is evaluated here rather than on a timer of its own — the watchdog tick calls
+	 * through, so a grace window is never more than ~10 s late in being noticed.
+	 */
+	private recomputeConnectionPool(): void {
+		const { pooled, expired } = computeConnectionPool({
+			viewportRooms: this.viewportRooms,
+			pinnedRoom: this.pinnedRoom,
+			interest: this.roomInterest,
+			now: Date.now(),
+			graceMs: DocumentManager.ROOM_INTEREST_GRACE_MS,
+			maxWarm: DocumentManager.MAX_WARM_ROOMS,
+		});
+		for (const roomName of expired) this.roomInterest.delete(roomName);
+		this.pooledRooms = pooled;
+	}
+
+	/**
+	 * Bring every live document's socket into line with what the pool now says.
+	 *
+	 * Both directions matter. Connecting what should be connected is the obvious half; the
+	 * other half is closing sockets nothing wants any more, which is the only thing stopping
+	 * a long session from arriving at one socket per note by a slower route.
+	 */
+	private reconcileRoomConnections(): void {
+		this.recomputeConnectionPool();
+		let detached = false;
+		for (const [roomName, doc] of this.docs.entries()) {
+			const wanted = this.shouldRoomConnect(roomName);
+			recordSyncDiagConnectionIntent(roomName, wanted);
+			const hasProvider = this.websocketProviders.has(roomName);
+			if (wanted === hasProvider) continue;
+			if (wanted) {
+				try {
+					this.ensureWebsocketProvider(roomName, doc);
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					console.warn(`[yjs-ws] could not attach provider for room=${roomName}: ${msg}`);
+				}
+			} else {
+				// deferEmit: a scroll can retire a dozen rooms' grace windows in one pass, and
+				// emitting per room would be a dozen React state updates to say one thing.
+				this.detachWebsocketProvider(roomName, { deferEmit: true });
+				detached = true;
+			}
+		}
+		if (detached) {
+			this.updateConnectionState();
+			this.emitConnectionStatus();
+		}
+	}
+
+	/**
+	 * Close and discard this room's socket while KEEPING its document.
+	 *
+	 * Deliberately does not run `docCleanup`. Those are doc-level listeners and one of them
+	 * is what records that you edited this note with nothing to push it — detaching that
+	 * along with the socket would recreate, exactly, the hole that moving it out of
+	 * ensureWebsocketProvider was meant to close. The document, its IndexedDB provider and
+	 * its handlers all stay; only the connection goes.
+	 */
+	private detachWebsocketProvider(roomName: string, options?: { deferEmit?: boolean }): void {
+		const wsProvider = this.websocketProviders.get(roomName);
+		if (!wsProvider) return;
+		this.wsCleanup.get(roomName)?.();
+		this.wsCleanup.delete(roomName);
+		this.websocketProviders.delete(roomName);
+		this.websocketReadyPromises.delete(roomName);
+		// Destroying a provider emits no disconnect event, so the report's gauges have to be
+		// told explicitly or they drift upward for the rest of the session.
+		recordSyncDiagRoomDestroyed(roomName, 'pool-evicted');
+		const timer = this.staggeredConnectTimers.get(roomName);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			this.staggeredConnectTimers.delete(roomName);
+		}
+		try {
+			wsProvider.disconnect?.();
+			wsProvider.destroy?.();
+		} catch {
+			// ignore
+		}
+		if (options?.deferEmit !== true) {
+			this.updateConnectionState();
+			this.emitConnectionStatus();
+		}
+	}
+
+	/**
+	 * Hold a connection for the room open in the editor, or release it with null.
+	 *
+	 * Also refreshes the room's ordinary interest, so closing the editor leaves it warm for
+	 * the grace window rather than dropping it the instant the overlay animates out — closing
+	 * a note and immediately reopening it is common and should cost nothing.
+	 */
+	public setPinnedRoom(noteId: string | null): void {
+		const raw = noteId ? this.normalizeNoteId(noteId) : '';
+		const next = raw ? this.roomNameFor(raw) : null;
+		if (next === this.pinnedRoom) return;
+		const previous = this.pinnedRoom;
+		this.pinnedRoom = next;
+		if (previous) this.roomInterest.set(previous, Date.now());
+		if (next) this.roomInterest.set(next, Date.now());
+		this.reconcileRoomConnections();
+	}
+
+	/**
+	 * Tell the manager which notes are on screen, and which ones this user actually uses.
+	 *
+	 * `recentNoteIds` is why a note at the BOTTOM of the grid is not punished for being
+	 * there. People arrange their most-used notes at the top and the bottom, those being the
+	 * two fastest places to reach, and a purely viewport-driven pool would leave the bottom
+	 * ones cold until you arrived — which you would see, as the card updating a beat after
+	 * you got there. Seeding the pool with the notes you open most means your habitual notes
+	 * are live before you scroll anywhere near them, and makes the behaviour the same on
+	 * every launch instead of depending on what you happened to scroll past.
+	 *
+	 * Both lists are note ids, not room names; aliases resolve through roomNameFor.
+	 */
+	public setViewportRooms(viewportNoteIds: readonly string[], recentNoteIds?: readonly string[]): void {
+		const next = new Set<string>();
+		for (const noteId of viewportNoteIds) {
+			const raw = this.normalizeNoteId(noteId);
+			if (!raw) continue;
+			next.add(this.roomNameFor(raw));
+		}
+		const now = Date.now();
+		// Refresh interest for everything visible, so leaving the viewport starts the grace
+		// window from NOW rather than from whenever it first appeared.
+		for (const roomName of next) this.roomInterest.set(roomName, now);
+		for (const noteId of recentNoteIds ?? []) {
+			const raw = this.normalizeNoteId(noteId);
+			if (!raw) continue;
+			const roomName = this.roomNameFor(raw);
+			// Only a floor, never a refresh: a recently-opened note that is off screen should
+			// age out like anything else, or the seed would pin it for the whole session.
+			if (!this.roomInterest.has(roomName)) this.roomInterest.set(roomName, now);
+		}
+		this.viewportRooms = next;
+		this.reconcileRoomConnections();
+	}
+
+	/**
+	 * Should this room hold a live socket right now?
+	 *
+	 * Four of these are not negotiable, and each one is a bug we would otherwise be choosing:
+	 *
+	 *   - **Registries.** The grid's note list and ordering come from them. Nothing renders
+	 *     without them, so they are never subject to any of this.
+	 *   - **A room with unsent local edits.** You edited it offline and nothing has pushed it
+	 *     yet. Leave this out and the edit sits in IndexedDB forever while the person you
+	 *     share it with sees nothing — no error, no badge, nothing wrong on screen.
+	 *   - **A room with no local content at all.** A first login on a new device has nothing
+	 *     to draw; there is no card to be lazy about. This set drains itself as each room
+	 *     syncs, so it costs a fresh device one slow boot and every later boot nothing.
+	 *   - **The upgrade boot.** Until the room markers have been initialised once, an empty
+	 *     marker set is indistinguishable from "nothing to send", and an edit made offline
+	 *     BEFORE this shipped would be stranded behind a socket that now never opens. So the
+	 *     first boot connects everything, exactly as before, and the markers are only trusted
+	 *     afterwards. See roomOfflineEditMarkers.ts.
+	 */
+	private shouldRoomConnect(roomName: string): boolean {
+		if (this.isRegistryRoom(roomName)) return true;
+		if (this.noIdbContentRooms.has(roomName)) return true;
+		if (hasRoomOfflineEdit(roomName)) return true;
+		if (!isRoomOfflineEditTrackingInitialised()) return true;
+		return this.pooledRooms.has(roomName);
+	}
+
 	private ensureWebsocketProvider(roomName: string, doc: Y.Doc): void {
 		const existing = this.websocketProviders.get(roomName);
 		if (existing) {
@@ -1554,6 +1874,10 @@ export class DocumentManager {
 				if (this.isNotesRegistryRoom(roomName) && !this.registryWsSynced) {
 					this.registryWsSynced = true;
 				}
+				// This room's edits have demonstrably gone out. Unconditional, unlike the
+				// workspace clear below: a sync is proof about THIS room no matter which
+				// workspace is active, which is the whole reason the per-room marker exists.
+				clearRoomOfflineEdit(roomName);
 				const syncedWorkspaceId = this.workspaceIdForRoom(roomName);
 				if (syncedWorkspaceId && syncedWorkspaceId === this.activeWorkspaceId) {
 					// Only for the active workspace. A non-active one stays marked until a real
@@ -1574,63 +1898,11 @@ export class DocumentManager {
 				this.emitConnectionStatus();
 			}
 		};
-		const onAfterTransaction = (tx: Y.Transaction): void => {
-			if (!tx.local) return;
-			if (tx.origin === this.internalOrigin) return;
-			if (tx.origin === this.accessOrigin) return;
-			if (tx.origin === this.updatedAtOrigin) return;
-			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
-			if (tx.changed.size > 0 && (wsProvider as any).wsconnected !== true) {
-				// Remember that this workspace owes the server something, so startup can flush
-				// only the workspaces that actually need it instead of all of them. Marked
-				// ABOVE the two guards below on purpose: the registry matters (a note created
-				// offline lives there) and so does a room that has never synced, which is the
-				// precise case the startup flush exists to rescue.
-				const editedWorkspaceId = this.workspaceIdForRoom(roomName);
-				if (editedWorkspaceId) markWorkspaceOfflineEdit(editedWorkspaceId);
-			}
-			// Registry room writes (order/title metadata) should not produce per-note pending badges.
-			// Without this filter, routine registry mutations could produce false-positive sync indicators
-			// after refresh/startup even when no actual note content edits occurred offline.
-			if (this.isNotesRegistryRoom(roomName)) return;
-			// Skip transactions that didn't actually change any Y.Types (e.g. structure
-			// assertions, read-only bindings). Without this guard, editor mount can mark a
-			// room as pending even when no content was modified.
-			if (tx.changed.size === 0) return;
-			// Only flag as pending-sync if this room has completed at least one WS
-			// sync in this session. Before that, we don't know whether IDB state
-			// diverges from the server — the connection header already shows
-			// "connecting" which is sufficient feedback during the startup window.
-			if (!this.wsEverSynced.has(roomName)) return;
-			const connected = (wsProvider as any).wsconnected === true;
-			if (!connected && !this.pendingSyncQueuedAt.has(roomName)) {
-				// Debounce: queue the room and promote to displayed-pending only if it
-				// remains disconnected after PENDING_DISPLAY_DEBOUNCE_MS. This prevents
-				// brief reconnect windows (e.g. force-reconnect on foreground-resume)
-				// from flashing the sync-pending badge for edits that will sync within
-				// seconds without any user action required.
-				this.pendingSyncQueuedAt.set(roomName, Date.now());
-				const timer = setTimeout(() => {
-					this.pendingSyncTimers.delete(roomName);
-					if (!this.pendingSyncQueuedAt.has(roomName)) return; // cleared by sync
-					const stillConnected = (wsProvider as any).wsconnected === true;
-					if (!stillConnected) {
-						this.pendingSyncRooms.add(roomName);
-						this.emitConnectionStatus();
-					} else {
-						// Reconnected before debounce fired — discard the queue entry.
-						this.pendingSyncQueuedAt.delete(roomName);
-					}
-				}, DocumentManager.PENDING_DISPLAY_DEBOUNCE_MS);
-				this.pendingSyncTimers.set(roomName, timer);
-			}
-		};
 
 		(wsProvider as any).on?.('status', onStatus);
 		(wsProvider as any).on?.('connection-close', onConnectionClose);
 		(wsProvider as any).on?.('connection-error', onConnectionError);
 		(wsProvider as any).on?.('sync', onSync);
-		doc.on('afterTransaction', onAfterTransaction);
 
 		this.websocketProviders.set(roomName, wsProvider);
 		this.ensureConnectionWatchdog();
@@ -1639,9 +1911,6 @@ export class DocumentManager {
 			(wsProvider as any).off?.('connection-close', onConnectionClose);
 			(wsProvider as any).off?.('connection-error', onConnectionError);
 			(wsProvider as any).off?.('sync', onSync);
-		});
-		this.docCleanup.set(roomName, () => {
-			doc.off('afterTransaction', onAfterTransaction);
 		});
 		if (!this.websocketReadyPromises.has(roomName)) {
 			this.websocketReadyPromises.set(roomName, this.waitForWebsocketConnected(wsProvider));
@@ -1699,6 +1968,10 @@ export class DocumentManager {
 	 */
 	private sweepStuckProviders(): void {
 		if (!this.websocketEnabled || !this.browserOnline) return;
+		this.maybeMarkRoomTrackingInitialised();
+		// Also the moment grace windows actually expire, and where a room that fell out
+		// of the pool gets its socket closed.
+		this.reconcileRoomConnections();
 
 		// First: a live doc with NO websocket provider at all.
 		//
@@ -1715,6 +1988,11 @@ export class DocumentManager {
 		// cause. Hence: scroll the grid, the effect re-runs, the room finally connects.
 		for (const [roomName, doc] of this.docs.entries()) {
 			if (this.websocketProviders.has(roomName)) continue;
+			// Only rooms that are SUPPOSED to be connected. This pass used to attach a
+			// provider to any live doc that had none, which under connect-what-you-look-at
+			// describes every lazily-loaded note — it would have quietly re-opened all ~96
+			// sockets within one ten-second tick and undone the entire change.
+			if (!this.shouldRoomConnect(roomName)) continue;
 			console.warn(`[yjs-ws] watchdog: room has no websocket provider, attaching — ${roomName}`);
 			recordSyncDiagWatchdogRescue(roomName);
 			logClientEvent('WS_LIFECYCLE', {
@@ -1746,11 +2024,51 @@ export class DocumentManager {
 		// evidence first, and the evidence pointed the other way.
 	}
 
+	/**
+	 * Decide that the room markers can be trusted from now on.
+	 *
+	 * Legitimate once the eager upgrade boot has drained: either every room we hold a document
+	 * for has synced, or LEGACY_FLUSH_CEILING_MS has passed since sync was switched on, which
+	 * is there because "every room" is a condition some devices can never satisfy. Checked
+	 * from the watchdog tick rather than on a timer of its own.
+	 *
+	 * If the app is closed before either happens the flag stays false and the next boot
+	 * connects everything again. That is the correct direction to fail in — a slow boot costs
+	 * seconds, a stranded edit costs someone their grocery list.
+	 */
+	private maybeMarkRoomTrackingInitialised(): void {
+		if (isRoomOfflineEditTrackingInitialised()) return;
+		// Needs a real server connection before anything can be called flushed.
+		if (!this.registryWsSynced) return;
+		if (this.docs.size === 0) return;
+		if (this.websocketFirstEnabledAt === null) return;
+		const elapsed = Date.now() - this.websocketFirstEnabledAt;
+		if (elapsed < DocumentManager.LEGACY_FLUSH_CEILING_MS) {
+			// Fast path: if everything has actually synced there is nothing left to wait for.
+			for (const roomName of this.docs.keys()) {
+				if (!this.wsEverSynced.has(roomName)) return;
+			}
+		}
+		markRoomOfflineEditTrackingInitialised();
+	}
+
 	private ensureConnectionWatchdog(): void {
 		if (this.watchdogTimer !== null || typeof setInterval === 'undefined') return;
 		// Let the sync-timing report read live provider flags for a room that produced no
 		// events at all. Event counts cannot explain a socket that was never opened; only the
 		// flags can say whether anything still intends to open it. No-op unless ?syncDiag=1.
+		setSyncDiagLiveCountsReader(() => {
+			let connected = 0;
+			for (const provider of this.websocketProviders.values()) {
+				if ((provider as any).wsconnected === true) connected++;
+			}
+			return {
+				providers: this.websocketProviders.size,
+				connected,
+				pooled: this.pooledRooms.size,
+				docs: this.docs.size,
+			};
+		});
 		setSyncDiagProviderStateReader((room) => {
 			const hasDoc = this.docs.has(room);
 			const provider = this.websocketProviders.get(room) as any;
@@ -1860,6 +2178,7 @@ export class DocumentManager {
 
 		const providers = Array.from(this.websocketProviders.values());
 		if (providers.length === 0) return;
+		recordSyncDiagLifecycle(`reconnect-all reason=${reason} providers=${providers.length}`);
 
 		if (this.wsDebug) {
 			console.info(
@@ -2096,6 +2415,96 @@ export class DocumentManager {
 		if (separator <= 0) return null;
 		if (roomName.startsWith('markup:')) return null;
 		return roomName.slice(0, separator);
+	}
+
+	/** Is there a live, connected socket for this room right now? */
+	private isRoomConnected(roomName: string): boolean {
+		return (this.websocketProviders.get(roomName) as any)?.wsconnected === true;
+	}
+
+	/**
+	 * Notice that a local edit landed on a room with nothing to push it, and remember.
+	 *
+	 * This used to live inside ensureWebsocketProvider, which quietly made "no socket for
+	 * this room" and "no record that you edited this room" the same condition - the one
+	 * combination where remembering matters most. Harmless while every doc got a socket the
+	 * moment it was asked for. A silent way to lose an offline edit the moment sockets became
+	 * something we only open for notes you are actually looking at. It is a doc listener, so
+	 * it now lives with the doc, beside ensureUpdatedAtTracking.
+	 *
+	 * Deliberately NOT skipped for the registry room, unlike ensureUpdatedAtTracking: a note
+	 * created offline lives in the registry, and the workspace marker is what gets it
+	 * flushed. The per-note pending badge is filtered out inside the handler instead.
+	 */
+	private ensureLocalEditTracking(roomName: string, doc: Y.Doc): void {
+		if (this.localEditTrackedRooms.has(roomName)) return;
+		this.localEditTrackedRooms.add(roomName);
+
+		const handler = (tx: Y.Transaction): void => {
+			if (!tx.local) return;
+			if (tx.origin === this.internalOrigin) return;
+			if (tx.origin === this.accessOrigin) return;
+			if (tx.origin === this.updatedAtOrigin) return;
+			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			if (tx.changed.size > 0 && !this.isRoomConnected(roomName)) {
+				// Remember that this workspace owes the server something, so startup can flush
+				// only the workspaces that actually need it instead of all of them. Marked
+				// ABOVE the two guards below on purpose: the registry matters (a note created
+				// offline lives there) and so does a room that has never synced, which is the
+				// precise case the startup flush exists to rescue.
+				const editedWorkspaceId = this.workspaceIdForRoom(roomName);
+				if (editedWorkspaceId) markWorkspaceOfflineEdit(editedWorkspaceId);
+				// And the room itself. The workspace marker alone was sufficient only while
+				// every room got a socket regardless: the active workspace's marker is
+				// cleared the moment its REGISTRY syncs, which says nothing about whether
+				// this note's edits ever left the device. Under connect-what-you-look-at
+				// that gap is how an off-screen offline edit would sit in IndexedDB
+				// forever. A marked room always earns a socket.
+				markRoomOfflineEdit(roomName);
+			}
+			// Registry room writes (order/title metadata) should not produce per-note pending badges.
+			// Without this filter, routine registry mutations could produce false-positive sync indicators
+			// after refresh/startup even when no actual note content edits occurred offline.
+			if (this.isNotesRegistryRoom(roomName)) return;
+			// Skip transactions that didn't actually change any Y.Types (e.g. structure
+			// assertions, read-only bindings). Without this guard, editor mount can mark a
+			// room as pending even when no content was modified.
+			if (tx.changed.size === 0) return;
+			// Only flag as pending-sync if this room has completed at least one WS
+			// sync in this session. Before that, we don't know whether IDB state
+			// diverges from the server — the connection header already shows
+			// "connecting" which is sufficient feedback during the startup window.
+			if (!this.wsEverSynced.has(roomName)) return;
+			const connected = this.isRoomConnected(roomName);
+			if (!connected && !this.pendingSyncQueuedAt.has(roomName)) {
+				// Debounce: queue the room and promote to displayed-pending only if it
+				// remains disconnected after PENDING_DISPLAY_DEBOUNCE_MS. This prevents
+				// brief reconnect windows (e.g. force-reconnect on foreground-resume)
+				// from flashing the sync-pending badge for edits that will sync within
+				// seconds without any user action required.
+				this.pendingSyncQueuedAt.set(roomName, Date.now());
+				const timer = setTimeout(() => {
+					this.pendingSyncTimers.delete(roomName);
+					if (!this.pendingSyncQueuedAt.has(roomName)) return; // cleared by sync
+					const stillConnected = this.isRoomConnected(roomName);
+					if (!stillConnected) {
+						this.pendingSyncRooms.add(roomName);
+						this.emitConnectionStatus();
+					} else {
+						// Reconnected before debounce fired — discard the queue entry.
+						this.pendingSyncQueuedAt.delete(roomName);
+					}
+				}, DocumentManager.PENDING_DISPLAY_DEBOUNCE_MS);
+				this.pendingSyncTimers.set(roomName, timer);
+			}
+		};
+		doc.on('afterTransaction', handler);
+
+		const existingCleanup = this.docCleanup.get(roomName);
+		this.docCleanup.set(roomName, () => {
+			doc.off('afterTransaction', handler);
+			existingCleanup?.();
+		});
 	}
 
 	/**

@@ -1192,6 +1192,144 @@ providers itself, and second-guessing it on a transient reading is what caused t
 Pending timers are keyed **per room**. They were a flat set, so any new pass cancelled every
 pending connect including rooms it was not being asked about.
 
+## Connections Go Where Attention Is, Not Where Documents Are
+
+**Asking for a document and opening a socket used to be the same action.** `getDocWithSync` did
+both, and NoteGrid called it for every id in `orderedIds` — every note in the workspace, not the
+viewport. y-websocket is one socket per room, so that was ~96 sockets through a path measured at
+~7 handshakes a second: **~20 s of a cold boot, and a note's freshness decided by its position in
+a queue it had no way to jump.** That is the whole of the "my shared list takes 6-17 seconds to
+update" report. The server was never implicated — 76-109 ms p50 across every measurement.
+
+**Documents are still eager. Only sockets are not.** Cards render correctly from IndexedDB at
+~390 ms and every measured report showed every room cached locally, so `getDocWithSync(id,
+{ connect: false })` is what the bulk readers now use. There were **four** of them, and finding
+only the first would have achieved nothing: `NoteGrid`, `WorkspaceImagesGallery`,
+`WorkspaceDocumentsGallery` and `offlineSearch` — the last meaning a single offline search
+re-opened every socket startup had just avoided. `connect` defaults to `true`, so every
+single-note caller (the editor, moves, creation, drawings) is untouched.
+
+`connect: false` is **not a veto.** `shouldRoomConnect` overrides it for four cases, each one a
+bug rather than a performance tradeoff:
+
+- **the registries** — nothing renders without them
+- **a room with unsent local edits** — see the hazard below
+- **a room with no IndexedDB content** — a fresh device has nothing to draw, so there is no card
+  to be lazy about. Self-draining, and it keeps NoteGrid's `pendingNoteWsSync` shimmer gate
+  meaningful. A first login is therefore exactly as slow as before, on purpose.
+- **the upgrade boot** — until the room markers have been initialised once, an empty marker set
+  cannot be told apart from "nothing to send"
+
+### The hazard that made this more than a subtraction
+
+**`onAfterTransaction` — the handler that records "you edited this with nothing to push it" —
+used to be installed inside `ensureWebsocketProvider`.** So "no socket for this room" and "no
+record that you edited this room" were the same condition, which is harmless when every doc gets
+a socket and a silent way to lose an offline edit the moment they do not. Not even the
+workspace-level marker from 1.21.2 would have been written.
+
+It is a doc listener. It now lives in `ensureLocalEditTracking`, called from
+`getOrCreateDocEntry` beside `ensureUpdatedAtTracking`, and looks the provider up
+(`isRoomConnected`) rather than closing over one. **Do not move it back into the socket setup**,
+and note that `detachWebsocketProvider` deliberately does *not* run `docCleanup` for exactly
+this reason.
+
+`roomOfflineEditMarkers.ts` is the durable half — the per-room twin of
+`workspaceOfflineEditMarkers.ts`. The workspace marker is not sufficient on its own: it is
+cleared as soon as the *active* workspace's registry syncs, which says nothing about whether a
+given note's edits ever left the device.
+
+**`getOrCreateDocEntry`'s early-return branch now re-attaches both doc listeners.** It did not,
+and the workspace-switch teardown keeps the docs while running `docCleanup` — so a surviving doc
+had its listeners detached with nothing to put them back, and the create path never runs again
+for that room. That was already a live bug for `updatedAt` (local edits stopped stamping
+`metadata.updatedAt` for the rest of the session after a workspace round-trip, skewing
+sort-by-recency and bubble scores) and would have been an edit-losing one for the marker.
+
+### The pool, and why it is not just the viewport
+
+`roomConnectionPool.ts` is a **pure function** so the rules can be tested without a browser
+(`tests/room-connection-pool.test.js`). Each rule answers a specific way this can feel wrong:
+
+- **On screen wins and is never capped.** Refusing to connect what the user is looking at is the
+  one unambiguous regression available here.
+- **The pinned room wins** — the open editor, via `setPinnedRoom`. Timestamped interest is
+  actively wrong for this: a note open longer than the grace window would lose its connection
+  under the person typing into it. A drawing opens through the same editor, so one id covers both.
+- **Interest decays over `ROOM_INTEREST_GRACE_MS` (30 s), it is not dropped instantly.** This is
+  what makes scrolling down and straight back up cost zero handshakes.
+- **The warm tail is capped at `MAX_WARM_ROOMS` (25).** Without it a long session arrives at one
+  socket per note by a slower route — and browsers cap at ~200 (Firefox) / ~255 (Chromium).
+- **Squeezed out is not expired.** A room that did not fit keeps its interest entry and returns
+  as warmer rooms age out.
+
+NoteGrid supplies the viewport via **one IntersectionObserver** over `[data-note-id]`, plus a
+MutationObserver to hand it nodes as the virtualizer mounts them. Deriving visibility from what
+is *rendered* instead would have been wrong in the least obvious place: a column is only
+virtualized past ~18 cards, so a 6-column desktop with 96 notes mounts **every** card, and the
+change would have silently done nothing there.
+
+- **`SCROLL_IDLE_PUBLISH_MS` (250 ms) is load-bearing, and it gates the SCROLL, not the card.**
+  The visible set is tracked continuously; *acting* on it waits until scrolling has been quiet.
+  The first version timed each card holding still instead, and **it did not work** — measured on
+  a dev server, flicking the grid without pausing still flooded the server with room loads. The
+  reason is that `rootMargin` is a whole viewport tall, so a card entering that band stays
+  intersecting for roughly two screen-heights of travel, comfortably longer than any per-element
+  window even at flick speed. The element was never the thing holding still. Do not reintroduce
+  a per-card timer here.
+- **`publishViewportRooms` does nothing while the grid is not the visible view.** An open editor
+  makes every card report itself off-screen, and acting on that would close the socket for the
+  note being read.
+- **`RECENT_CONNECTION_SEED_COUNT` (8)** seeds the pool from `lastAccessedAt`, which costs no new
+  tracking (documents are eager, so it is known at ~390 ms). This exists because people arrange
+  their most-used notes at the **top and the bottom** of the grid, and a purely viewport-driven
+  pool would leave the bottom ones cold until you arrived there.
+
+### Two traps specific to this
+
+**`sweepStuckProviders` must consult `shouldRoomConnect`.** It attaches a provider to any live
+doc that has none, which under lazy sockets describes every lazily-loaded note — it would have
+re-opened all ~96 within one 10 s tick and quietly undone the change.
+
+**`maybeMarkRoomTrackingInitialised` must not require every room to have synced.** The obvious
+condition is "the eager upgrade boot has fully drained", and on this codebase it can never be
+met: two or three rooms are known not to sync (the destroyed-doc bug), plus anything the server
+refuses with a 1008. The flag would stay false forever and every boot would keep paying the full
+connect bill — the feature would appear to do nothing. Hence `LEGACY_FLUSH_CEILING_MS` (45 s) as
+a ceiling, with all-synced as a fast path.
+
+**The sync report distinguishes intent now.** `recordSyncDiagConnectionIntent` exists because
+`never synced` would otherwise have read ~85 of 96 — true, useless, and enough to bury the two or
+three rooms that genuinely should have connected. `document-only` is the deliberate count.
+
+**`--- LIFECYCLE ---` records app-level actions, and it earned its place immediately.** A dev
+report showed every open socket drop to zero and climb back around the seven-second mark, with
+every room reporting `connects=2 disconnects=1 closes=1`, and nothing in the report could say
+what did it. Room timings describe rooms; they are silent about the app reaching in and cycling
+all of them. Two runs with the lifecycle log answered two separate questions outright:
+
+- the cycle is `websocket-DISABLED` followed by `websocket-ENABLED` ~400 ms later, a few seconds
+  after sync was first enabled — so every connected room pays a second handshake on every boot
+- the rooms that "never sync" are destroyed by **`setExternalRoomAliases`**, not
+  `teardownAllRooms()`: the destroy count per room equalled the number of alias passes exactly,
+  in both runs, and `destroyed=3` matched `never synced 3`
+
+That second one reframed a bug three previous releases had tried to fix. Events are counted AND
+timestamped because "once, during bootstrap" and "every few seconds, forever" look identical in
+a first-occurrence-only mark.
+
+**Both concurrency gauges are per-room occupancy, not bare counters.** `max simultaneous open`
+read 35 while no sample exceeded 21, because it incremented on `connected` and decremented only
+on a `disconnected` status — and a provider that is *destroyed* emits no such status, so its slot
+was never returned. `releaseOpen`/`releaseConnecting` are called from every path that ends a
+socket, teardown and pool eviction included. This is the second time this exact leak has shipped
+(the connecting half was fixed in 1.21.3); if you add another gauge, make it occupancy-based from
+the start.
+
+**`destroyRoom` takes a `reason`, and the report prints it.** `alias-shadowed-local-room`,
+`stale-alias-target`, `teardown-all`, `pool-evicted`. Added because working out which teardown was
+responsible previously required correlating counters by hand across two runs.
+
 ## A Room With No Provider Syncs Nothing, Forever
 
 Three note rooms turned up unconnected in every single sync-timing report across two devices

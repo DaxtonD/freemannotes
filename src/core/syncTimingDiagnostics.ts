@@ -64,6 +64,12 @@ type RoomRecord = {
 	 * mean what it says.
 	 */
 	countedConnecting: boolean;
+	/** Mirrors countedConnecting for the OPEN gauge. See the leak note in recordSyncDiagStatus. */
+	countedOpen: boolean;
+	/** Why this room's provider went away, most recent first use. */
+	destroyReasons: string[];
+	/** Whether this room is SUPPOSED to hold a socket. null = never asked. */
+	wantsConnection: boolean | null;
 };
 
 type Mark = { name: string; at: number; detail?: string };
@@ -112,6 +118,9 @@ function ensureRoom(room: string): RoomRecord | null {
 		destroys: 0,
 		createdWithConnect: null,
 		countedConnecting: false,
+		countedOpen: false,
+		destroyReasons: [],
+		wantsConnection: null,
 	};
 	rooms.set(room, record);
 	return record;
@@ -153,6 +162,21 @@ export function recordSyncDiagRequested(room: string, hadIdbContent?: boolean): 
 	}
 }
 
+/**
+ * Whether this room is supposed to hold a socket at all.
+ *
+ * Without this the report became actively misleading the moment sockets stopped being opened
+ * for every note: ~85 of 96 rooms would show under NEVER SYNCED, which is true and tells you
+ * nothing, and would bury the two or three rooms that genuinely should have connected and
+ * did not. "Never synced" is only interesting for a room that was trying.
+ */
+export function recordSyncDiagConnectionIntent(room: string, wanted: boolean): void {
+	if (!SYNC_DIAG_ENABLED) return;
+	const record = ensureRoom(room);
+	if (!record) return;
+	record.wantsConnection = wanted;
+}
+
 export function recordSyncDiagIdbReady(room: string): void {
 	if (!SYNC_DIAG_ENABLED) return;
 	const record = ensureRoom(room);
@@ -170,10 +194,16 @@ export function recordSyncDiagWsCreated(room: string, connectRequested?: boolean
 	}
 }
 
-export function recordSyncDiagRoomDestroyed(room: string): void {
+export function recordSyncDiagRoomDestroyed(room: string, reason?: string): void {
 	if (!SYNC_DIAG_ENABLED) return;
 	const record = ensureRoom(room);
-	if (record) record.destroys += 1;
+	if (!record) return;
+	record.destroys += 1;
+	// A destroyed provider emits no disconnect, so its gauge slots have to be handed back
+	// here or both gauges drift for the rest of the session.
+	releaseConnecting(record);
+	releaseOpen(record);
+	if (reason && !record.destroyReasons.includes(reason)) record.destroyReasons.push(reason);
 }
 
 /**
@@ -186,6 +216,58 @@ export function recordSyncDiagRoomDestroyed(room: string): void {
  */
 type ProviderStateReader = (room: string) => string | null;
 let providerStateReader: ProviderStateReader | null = null;
+
+/**
+ * App-level actions that affect every room at once.
+ *
+ * Added because a dev-server report showed all twenty open sockets drop to zero and climb back
+ * to twenty around the seven-second mark, with every room reporting `connects=2 disconnects=1
+ * closes=1` — and nothing in the report could say what did it. The room timings describe rooms;
+ * they are silent about the app reaching in and cycling all of them. Guessing at that from
+ * event counts is exactly the mistake that cost three wrong fixes on the stuck-room bug, so:
+ * record the actions instead.
+ *
+ * Counted AND timestamped, because "once, during bootstrap" and "every few seconds, forever"
+ * are completely different bugs that look identical in a first-occurrence-only mark.
+ */
+type LifecycleEvent = { at: number; label: string };
+
+const MAX_LIFECYCLE_EVENTS = 60;
+const lifecycleEvents: LifecycleEvent[] = [];
+
+export function recordSyncDiagLifecycle(label: string): void {
+	if (!SYNC_DIAG_ENABLED) return;
+	if (lifecycleEvents.length >= MAX_LIFECYCLE_EVENTS) return;
+	lifecycleEvents.push({ at: Math.round(now()), label });
+}
+
+/**
+ * Live socket counts, read at capture time.
+ *
+ * The whole point of connect-what-you-are-looking-at is a number: how many sockets are open
+ * right now. Every other line in this report is a timing, and timings cannot answer it — a room
+ * that synced an hour ago and has since been closed still shows as synced. Without this the
+ * only way to check the headline claim was to count rows in devtools, which rules out the
+ * device where it matters most.
+ */
+export type SyncDiagLiveCounts = {
+	/** Rooms holding a WebSocket provider at all. */
+	providers: number;
+	/** Of those, how many are actually connected. */
+	connected: number;
+	/** Rooms the connection pool currently says should be connected. */
+	pooled: number;
+	/** Rooms with a document loaded, connected or not. */
+	docs: number;
+};
+
+type LiveCountsReader = () => SyncDiagLiveCounts;
+
+let liveCountsReader: LiveCountsReader | null = null;
+
+export function setSyncDiagLiveCountsReader(reader: LiveCountsReader | null): void {
+	liveCountsReader = reader;
+}
 
 export function setSyncDiagProviderStateReader(reader: ProviderStateReader | null): void {
 	if (!SYNC_DIAG_ENABLED) return;
@@ -209,14 +291,15 @@ export function recordSyncDiagStatus(room: string, status: string): void {
 		releaseConnecting(record);
 		record.connects += 1;
 		if (record.connectedAt === null) record.connectedAt = Math.round(now());
-		openCount += 1;
-		if (openCount > maxOpen) maxOpen = openCount;
+		if (!record.countedOpen) {
+			record.countedOpen = true;
+			openCount += 1;
+			if (openCount > maxOpen) maxOpen = openCount;
+		}
 		return;
 	}
 	if (status === 'disconnected') {
-		// A disconnect can end either an open socket or one that never finished connecting;
-		// release whichever this room was actually occupying.
-		if (record.connects > record.disconnects) openCount = Math.max(0, openCount - 1);
+		releaseOpen(record);
 		releaseConnecting(record);
 		record.disconnects += 1;
 	}
@@ -226,6 +309,23 @@ function releaseConnecting(record: RoomRecord): void {
 	if (!record.countedConnecting) return;
 	record.countedConnecting = false;
 	connectingCount = Math.max(0, connectingCount - 1);
+}
+
+/**
+ * Give back this room's slot in the OPEN gauge, if it holds one.
+ *
+ * The gauge used to increment on every `connected` and decrement only on a `disconnected`
+ * status, gated on `connects > disconnects`. A provider that is DESTROYED rather than
+ * disconnected emits no such status, so its slot was never returned and the gauge drifted
+ * upward: a dev-server report showed `max simultaneous open 35` while no concurrency sample
+ * ever exceeded 21. Exactly the same leak as the connecting gauge in 1.21.3, in the other
+ * half of the pair, and the same fix — per-room occupancy that can only be held once and is
+ * released from every path that ends a socket, including teardown.
+ */
+function releaseOpen(record: RoomRecord): void {
+	if (!record.countedOpen) return;
+	record.countedOpen = false;
+	openCount = Math.max(0, openCount - 1);
 }
 
 export function recordSyncDiagSynced(room: string): void {
@@ -243,6 +343,7 @@ export function recordSyncDiagClose(room: string, code: number | null): void {
 	// A close ends the attempt whether or not a `disconnected` status follows it — which is
 	// exactly the case the old gauge missed.
 	releaseConnecting(record);
+	releaseOpen(record);
 }
 
 export function recordSyncDiagError(room: string): void {
@@ -262,11 +363,15 @@ export function recordSyncDiagWatchdogRescue(room: string): void {
 
 export function getSyncDiagStatus(): { rooms: number; synced: number; pending: number; elapsedMs: number } {
 	const all = Array.from(rooms.values());
-	const synced = all.filter((record) => record.syncedAt !== null).length;
+	// Only rooms that are meant to be connected. The overlay's counter would otherwise sit
+	// at something like 11/96 forever and read as a stall, when 85 of those rooms are
+	// deliberately document-only and have nothing to sync.
+	const wanted = all.filter((record) => record.wantsConnection !== false);
+	const synced = wanted.filter((record) => record.syncedAt !== null).length;
 	return {
-		rooms: all.length,
+		rooms: wanted.length,
 		synced,
-		pending: all.length - synced,
+		pending: wanted.length - synced,
 		elapsedMs: Math.round(now() - startedAt),
 	};
 }
@@ -305,7 +410,10 @@ export function formatSyncDiagReport(): string {
 	const all = Array.from(rooms.values());
 	const notes = all.filter((record) => roomKind(record.room) === 'note');
 	const synced = all.filter((record) => record.syncedAt !== null);
-	const never = all.filter((record) => record.syncedAt === null);
+	// A room nothing asked to connect has not failed to sync; it was never trying. Keeping
+	// the two apart is what makes "never synced" a number worth reading.
+	const never = all.filter((record) => record.syncedAt === null && record.wantsConnection !== false);
+	const documentOnly = all.filter((record) => record.syncedAt === null && record.wantsConnection === false);
 
 	const idbDurations = all.map((r) => delta(r.requestedAt, r.idbReadyAt)).filter((v): v is number => v !== null);
 	const queueDurations = all.map((r) => delta(r.requestedAt, r.wsCreatedAt)).filter((v): v is number => v !== null);
@@ -339,7 +447,13 @@ export function formatSyncDiagReport(): string {
 	lines.push('--- HEADLINE ---');
 	lines.push(`rooms opened            ${all.length}  (notes ${notes.length}, registries ${registryCount})`);
 	lines.push(`reached synced          ${synced.length}`);
-	lines.push(`never synced            ${never.length}`);
+	lines.push(`never synced            ${never.length}   <-- rooms that WERE meant to connect`);
+	lines.push(`document-only          ${documentOnly.length}   <-- loaded from IndexedDB, no socket by design`);
+	const live = liveCountsReader ? liveCountsReader() : null;
+	if (live) {
+		lines.push(`sockets OPEN NOW       ${live.connected} connected of ${live.providers} providers   <-- the number this whole change is about`);
+		lines.push(`pool wants             ${live.pooled}   (documents loaded: ${live.docs})`);
+	}
 	lines.push(`first room requested    ${fmt(firstRequest)}ms`);
 	lines.push(`first NOTE synced       ${fmt(firstNoteSynced)}ms`);
 	lines.push(`last room synced        ${fmt(lastSynced)}ms   <-- when the app actually became current`);
@@ -355,6 +469,11 @@ export function formatSyncDiagReport(): string {
 	lines.push('  wsCreated->connected dominating = handshake cost (socket ceiling / Cloudflare / nginx)');
 	lines.push('  connected->synced dominating    = server cost (auth query + Postgres read)');
 	lines.push('  requested->wsCreated dominating = our own client-side queuing');
+	lines.push('');
+	lines.push('  CAVEAT: a provider is constructed before sync is switched on, so');
+	lines.push('  wsCreated->connected INCLUDES the wait for websocket-ENABLED. Check its');
+	lines.push('  timestamp in LIFECYCLE before reading this as handshake cost - measured 3.9s');
+	lines.push('  of it on localhost, where a handshake costs nothing at all.');
 	lines.push('');
 
 	lines.push('--- CONCURRENCY ---');
@@ -399,7 +518,7 @@ export function formatSyncDiagReport(): string {
 	lines.push('');
 
 	if (never.length > 0) {
-		lines.push('--- NEVER SYNCED ---');
+		lines.push('--- NEVER SYNCED (and supposed to be connected) ---');
 		for (const record of never.slice(0, 40)) {
 			lines.push(`  ${roomKind(record.room).padEnd(15)} connects=${record.connects} disconnects=${record.disconnects} closes=${record.closes} lastCode=${fmt(record.lastCloseCode)} errors=${record.errors}  ${record.room}`);
 		}
@@ -411,9 +530,23 @@ export function formatSyncDiagReport(): string {
 		for (const record of never.slice(0, 10)) {
 			lines.push(`  ${record.room}`);
 			lines.push(`    providerCreations=${record.providerCreations} destroys=${record.destroys} createdWithConnect=${record.createdWithConnect === null ? '?' : record.createdWithConnect}`);
+			if (record.destroyReasons.length > 0) {
+				lines.push(`    destroyedBy: ${record.destroyReasons.join(', ')}`);
+			}
 			lines.push(`    requestedAt=${fmt(record.requestedAt)}ms idbReadyAt=${fmt(record.idbReadyAt)}ms wsCreatedAt=${fmt(record.wsCreatedAt)}ms connectingAt=${fmt(record.connectingAt)}ms`);
 			const live = providerStateReader ? providerStateReader(record.room) : null;
 			lines.push(`    live: ${live ?? '(no reader registered)'}`);
+		}
+		lines.push('');
+	}
+
+	if (lifecycleEvents.length > 0) {
+		lines.push('--- LIFECYCLE (app-level actions that hit every room at once) ---');
+		for (const event of lifecycleEvents) {
+			lines.push(`  ${String(event.at).padStart(7)}ms  ${event.label}`);
+		}
+		if (lifecycleEvents.length >= MAX_LIFECYCLE_EVENTS) {
+			lines.push(`  (capped at ${MAX_LIFECYCLE_EVENTS} — there were more)`);
 		}
 		lines.push('');
 	}

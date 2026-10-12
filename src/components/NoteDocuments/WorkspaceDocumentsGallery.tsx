@@ -360,7 +360,11 @@ export function WorkspaceDocumentsGallery(props: WorkspaceDocumentsGalleryProps)
 			if (pendingDocLoadsRef.current.has(id)) continue;
 			pendingDocLoadsRef.current.add(id);
 			void manager
-				.getDocWithSync(id)
+				// Reading what this device already has, not joining a session: this walks
+				// EVERY note in the workspace, so a socket each would re-open the ~96 that
+				// startup now deliberately avoids. Opening a gallery should not cost more
+				// than opening the app.
+				.getDocWithSync(id, { connect: false })
 				.then((doc) => {
 					setDocsById((previous) => (previous[id] === doc ? previous : { ...previous, [id]: doc }));
 				})

@@ -189,7 +189,10 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 		const roomId = placement?.roomId || (workspaceId ? `${workspaceId}:${noteId}` : noteId);
 		let doc: Y.Doc;
 		try {
-			doc = await args.manager.getDocWithSync(noteId);
+			// Searching is reading. This runs over every note in the workspace, so with a
+			// socket each one offline search would undo the whole of startup's restraint and
+			// re-open ~96 connections — the loudest possible way to answer a text query.
+			doc = await args.manager.getDocWithSync(noteId, { connect: false });
 		} catch {
 			return null;
 		}

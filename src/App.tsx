@@ -167,6 +167,7 @@ import {
 	markWorkspaceOfflineEditTrackingInitialised,
 	readWorkspacesWithOfflineEdits,
 } from './core/workspaceOfflineEditMarkers';
+import { clearRoomOfflineEditMarkers } from './core/roomOfflineEditMarkers';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -1969,6 +1970,17 @@ export function App(): React.JSX.Element {
 	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(_restoredOverlay?.noteAttachmentBrowserState ?? null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(_restoredOverlay?.selectedNoteId ?? null);
+
+	// Hold the open note's connection for as long as it is open.
+	//
+	// Everything else earns a socket by being on screen or recently used, both of
+	// which expire. An editor session does not: it can sit open for an hour, and
+	// having its connection quietly time out from under the person typing would be
+	// the single worst regression available here. A drawing opens through this same
+	// editor, so it is covered by the same id.
+	React.useEffect(() => {
+		manager.setPinnedRoom(selectedNoteId);
+	}, [manager, selectedNoteId]);
 	const selectedNoteIdRef = React.useRef(selectedNoteId);
 	const [pendingMentionScrollNodeId, setPendingMentionScrollNodeId] = React.useState<string | null>(null);
 	selectedNoteIdRef.current = selectedNoteId;
@@ -5572,6 +5584,7 @@ export function App(): React.JSX.Element {
 		clearDrawingThumbnailLocalCache();
 		resetAttachedDrawingAccessRecovery();
 		clearWorkspaceOfflineEditMarkers();
+		clearRoomOfflineEditMarkers();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();
