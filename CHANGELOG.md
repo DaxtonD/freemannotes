@@ -2,6 +2,24 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.9 - 2026-10-12
+
+### Added
+- **Note cards hold their size until you've actually looked at them.** This is the third of the three delivery complaints that started all of this, and it's the fix that was asked for: when somebody else changes a note, the card keeps the height it already had, picks up a ring and a dot so you can see something arrived, and only re-measures once you've opened it — which happens behind the editor, so the grid is already settled by the time you close it.
+
+  The honest history: this got *worse* before it got better. Back when the app opened a connection for every note, everything updated during the first twenty seconds of a cold start, so cards did their shuffling early and mostly before you were paying attention. Now a note updates when you scroll to it, so it resized right in front of you. Less total movement, considerably more annoying, and it took real scrolling on a real phone to notice.
+
+  Two details worth recording, because both are places this could have gone wrong:
+
+  The card is genuinely *clamped*, not measured dishonestly. There's a note in our own contributing guide about an attempt in 1.11.1 to stop cards moving by withholding their real height, which broke both the virtualized grid and drag-and-drop — the layout needs true numbers. Forcing the height means the card really is that tall and the content is simply clipped, so everything measuring it still gets the truth.
+
+  And your own edits don't count as news. Ticking a checkbox on a card bumps the same timestamp a collaborator's edit does, so without care the card would freeze mid-tap and flag you about something you'd just done yourself. The timestamp is also stamped on every keystroke, so the first version of this re-rendered the entire grid once per character typed. Both handled.
+
+  What this device has shown you is tracked locally, per device — your phone and your desktop each get their own chance to tell you what changed. It records note identifiers and timestamps, nothing else, and it's wiped on sign-out.
+
+### Known gap
+- The card tells you *something* changed, not *who* changed it. The chip showing which collaborator made the edit needs attribution plumbed through from the server, which already knows — that's next.
+
 ## 1.21.8 - 2026-10-12
 
 ### Fixed

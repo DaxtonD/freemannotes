@@ -1192,6 +1192,70 @@ providers itself, and second-guessing it on a transient reading is what caused t
 Pending timers are keyed **per room**. They were a flat set, so any new pass cancelled every
 pending connect including rooms it was not being asked about.
 
+## Cards Hold Their Height Until You Have Looked At Them
+
+**The problem got worse before it got better, and that is the useful part.** Card-height
+shifting was the third of the three original delivery complaints. When the app opened a socket
+per note, every note synced inside the first ~20 s of a cold boot, so the shifting happened
+early and in bulk. Once sockets became viewport-driven, a note syncs *when you scroll to it* —
+so it resizes on arrival, in front of the user. Less total movement, much more irritating.
+Found by scrolling a real phone, not by reading anything.
+
+`noteContentSeenState.ts` holds the decision as a pure, tested function. The rules:
+
+- A note whose `updatedAt` is newer than the version **this device** last showed at full height
+  is `changed`, and the card is clamped to its last measured height.
+- **The open note is never held.** Opening it is how the user catches up, and the re-measure
+  then happens behind the editor overlay so the grid is correct by the time it closes.
+- A note with no record is **seeded silently, not flagged**. This looks like it would defeat the
+  whole thing on the boot where it matters most, and does not: the grid renders from IndexedDB
+  at ~400 ms, before any socket opens, so the seed captures the STALE timestamp and the fresher
+  one arriving over the socket is correctly flagged.
+- A `changed` note with no measured height is not held — there is nothing to hold it at and
+  nothing has moved.
+
+### Three traps, all of them real
+
+**The card is CLAMPED, never mis-measured.** See "Virtualizer must get real heights" in
+CLAUDE.md: withholding a real measurement to stop a card moving broke virtualization and drag in
+1.11.1. `forcedHeightPx` makes the element genuinely that tall, so the ResizeObserver measures
+the truth and the content is simply clipped. If you ever find yourself returning a stale number
+from the height map instead, you are repeating 1.11.1.
+
+**A local edit is not news, and finding out needs one hook, not many.**
+`DocumentManager.subscribeLocalNoteEdit` exists for this. Ticking a checkbox on a card advances
+`updatedAt` exactly as a collaborator's edit does, so without it the card clamps mid-tap and
+flags the user about their own action. Marking "seen" at each interaction site instead would
+mean the grid's checklist/completed/link handlers *and* every path in the editor — and a missed
+one is a visibly wrong card.
+
+**`updatedAt` is stamped on every local transaction, i.e. every keystroke.** The first version
+of the subscriber bumped React state each time, re-rendering the whole grid per character typed.
+The open note is therefore excluded from the subscriber entirely (it is never held anyway), and
+the open/close effect records the final value — **including on close**, because by then the
+user's own edits have advanced `updatedAt` past whatever was recorded on open, and without that
+second mark the card comes back flagged by its own author's typing.
+
+### Why `updatedAt` and a device-local map
+
+`lastAccessedAt` is shared Yjs metadata, so it cannot mean "since *you* last looked" — a
+collaborator opening a note updates it for you too. `updatedAt` is shared and that is correct:
+it describes the content, not a viewer. The per-viewer half is device-local in localStorage,
+because "has this screen shown you this version" is a question about the screen. Note ids and
+timestamps only; pruned against the current workspace; cleared on logout.
+
+**`pruneNoteContentSeenState` refuses to prune against an empty note list.** The grid's ordered
+ids are empty until the registry hydrates, and pruning there would wipe the map and flag every
+note in the workspace on the next pass.
+
+### The CSS is pseudo-elements, not box-shadow
+
+`.card` already owns `box-shadow: inset 0 0 0 1px var(--note-card-banner-highlight, ...)` — that
+is how the banner highlight is drawn. Setting `box-shadow` on the changed-card class would
+silently replace it for any note with a banner. The ring is a `::before` and the dot an
+`::after`. A ring and not a border, because a border changes the box and would shift the layout
+of the card being held still.
+
 ## Connections Go Where Attention Is, Not Where Documents Are
 
 **Asking for a document and opening a socket used to be the same action.** `getDocWithSync` did

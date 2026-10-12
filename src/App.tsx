@@ -168,6 +168,7 @@ import {
 	readWorkspacesWithOfflineEdits,
 } from './core/workspaceOfflineEditMarkers';
 import { clearRoomOfflineEditMarkers } from './core/roomOfflineEditMarkers';
+import { clearNoteContentSeenState } from './core/noteContentSeenState';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -5585,6 +5586,7 @@ export function App(): React.JSX.Element {
 		resetAttachedDrawingAccessRecovery();
 		clearWorkspaceOfflineEditMarkers();
 		clearRoomOfflineEditMarkers();
+		clearNoteContentSeenState();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();
