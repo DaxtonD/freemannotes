@@ -4715,7 +4715,7 @@ export function App(): React.JSX.Element {
 		setAuthWorkspaceId(restoredWorkspaceId);
 		setAuthOfflineMode(true);
 		writeWorkspaceSelectionCache({ userId: cached.userId, workspaceId: restoredWorkspaceId });
-		manager.setWebsocketEnabled(false);
+		manager.setWebsocketEnabled(false, 'restoreCachedAuthSession');
 		manager.setActiveWorkspaceId(restoredWorkspaceId);
 		return true;
 	}, [manager, primeThemeForAuthenticatedUser]);
@@ -4754,7 +4754,7 @@ export function App(): React.JSX.Element {
 					setAuthWorkspaceId(null);
 					setAuthOfflineMode(false);
 					manager.setActiveWorkspaceId(null);
-					manager.setWebsocketEnabled(false);
+					manager.setWebsocketEnabled(false, 'probeSession');
 					return;
 				}
 
@@ -4773,7 +4773,7 @@ export function App(): React.JSX.Element {
 					setAuthWorkspaceId(null);
 					setAuthOfflineMode(false);
 					manager.setActiveWorkspaceId(null);
-					manager.setWebsocketEnabled(false);
+					manager.setWebsocketEnabled(false, 'probeSession#2');
 					return;
 				}
 
@@ -4809,7 +4809,7 @@ export function App(): React.JSX.Element {
 					// Keep WS disabled while we re-activate on the server. Only enabling WS
 					// AFTER activation completes prevents "forbidden namespace" loops where
 					// the client opens workspace-B rooms before the server session is updated.
-					manager.setWebsocketEnabled(false);
+					manager.setWebsocketEnabled(false, 'probeSession#3');
 					// Point the manager at the intended workspace only after WS is disabled,
 					// otherwise it eagerly opens the new registry rooms against the old cookie.
 					manager.setActiveWorkspaceId(effectiveWorkspaceId);
@@ -4852,7 +4852,7 @@ export function App(): React.JSX.Element {
 					if (flushNetworkFailed) {
 						// Network went down mid-flush — treat as offline, preserve local selection.
 						setAuthOfflineMode(true);
-						manager.setWebsocketEnabled(false);
+						manager.setWebsocketEnabled(false, 'probeSession#4');
 					} else {
 						// All preceding workspaces flushed. Now activate the target workspace.
 						let activatedWorkspaceId: string | null = effectiveWorkspaceId;
@@ -4882,16 +4882,16 @@ export function App(): React.JSX.Element {
 						if (activationNetworkError) {
 							// Treat as offline: preserve the locally-selected workspace and disable sync.
 							setAuthOfflineMode(true);
-							manager.setWebsocketEnabled(false);
+							manager.setWebsocketEnabled(false, 'probeSession#5');
 						} else if (activatedWorkspaceId !== effectiveWorkspaceId) {
 							// Server rejected target: revert so WS rooms align with existing session.
 							manager.setActiveWorkspaceId(activatedWorkspaceId);
 							setAuthWorkspaceId(activatedWorkspaceId);
 							writeAuthCache({ v: 1, userId, workspaceId: activatedWorkspaceId, profileImage, role });
 							writeWorkspaceSelectionCache({ userId, workspaceId: activatedWorkspaceId });
-							manager.setWebsocketEnabled(Boolean(activatedWorkspaceId));
+							manager.setWebsocketEnabled(Boolean(activatedWorkspaceId), 'probeSession#6');
 						} else {
-							manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+							manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId), 'probeSession#7');
 						}
 					}
 				} else {
@@ -4913,9 +4913,9 @@ export function App(): React.JSX.Element {
 						? localWorkspaceIds.filter((id) => id !== targetWorkspaceId)
 						: [];
 					if (!targetWorkspaceId || idsToFlush.length === 0) {
-						manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+						manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId), 'probeSession#8');
 					} else {
-						manager.setWebsocketEnabled(false);
+						manager.setWebsocketEnabled(false, 'probeSession#9');
 						let flushNetworkFailed = false;
 						for (const wsId of idsToFlush) {
 							try {
@@ -4937,7 +4937,7 @@ export function App(): React.JSX.Element {
 						}
 						if (flushNetworkFailed) {
 							setAuthOfflineMode(true);
-							manager.setWebsocketEnabled(false);
+							manager.setWebsocketEnabled(false, 'probeSession#10');
 						} else {
 							// Every activate() call above repointed the server session at a
 							// DIFFERENT workspace to flush it — re-point it back at the real
@@ -4952,7 +4952,7 @@ export function App(): React.JSX.Element {
 										body: JSON.stringify({ deviceId }),
 									}
 								);
-								manager.setWebsocketEnabled(activateRes.ok);
+								manager.setWebsocketEnabled(activateRes.ok, 'probeSession#11');
 								// The unconditional flushQueuedNoteLinkSync effect elsewhere fires
 								// as soon as authStatus flips to 'authed' — which happens well
 								// before this reconciliation loop finishes — so its one un-retried
@@ -4962,7 +4962,7 @@ export function App(): React.JSX.Element {
 								if (activateRes.ok) void flushQueuedNoteLinkSync(userId);
 							} catch {
 								setAuthOfflineMode(true);
-								manager.setWebsocketEnabled(false);
+								manager.setWebsocketEnabled(false, 'probeSession#12');
 							}
 						}
 					}
@@ -4981,7 +4981,7 @@ export function App(): React.JSX.Element {
 				setAuthWorkspaceId(null);
 				setAuthOfflineMode(false);
 				manager.setActiveWorkspaceId(null);
-				manager.setWebsocketEnabled(false);
+				manager.setWebsocketEnabled(false, 'probeSession#13');
 			}
 		},
 		[deviceId, manager, primeAuthenticatedThemeBeforeWorkspaceLoad, restoreCachedAuthSession]
@@ -5015,10 +5015,10 @@ export function App(): React.JSX.Element {
 			setAuthStatus('authed');
 			setAuthOfflineMode(false);
 			if (effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) {
-				manager.setWebsocketEnabled(false);
+				manager.setWebsocketEnabled(false, 'refreshAuthenticatedProfile');
 			}
 			manager.setActiveWorkspaceId(effectiveWorkspaceId);
-			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId) && effectiveWorkspaceId === workspaceId);
+			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId) && effectiveWorkspaceId === workspaceId, 'refreshAuthenticatedProfile#2');
 			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage, role });
 			writeWorkspaceSelectionCache({ userId, workspaceId: effectiveWorkspaceId });
 			updateKnownUserCache([body.user]);
@@ -5312,7 +5312,7 @@ export function App(): React.JSX.Element {
 			);
 			if (shouldHydrateFromSnapshot && snapshot.activeWorkspaceId) {
 				setAuthWorkspaceId(snapshot.activeWorkspaceId);
-				manager.setWebsocketEnabled(false);
+				manager.setWebsocketEnabled(false, 'hydrateWorkspaceFromIdbSnapshot');
 				manager.setActiveWorkspaceId(snapshot.activeWorkspaceId);
 				setPendingRestoredSharedFolder(snapshot.activeSharedFolder ?? null);
 				writeAuthCache({
@@ -5553,7 +5553,7 @@ export function App(): React.JSX.Element {
 		saveViewMode('card');
 		clearAuthCache();
 		manager.setActiveWorkspaceId(null);
-		manager.setWebsocketEnabled(false);
+		manager.setWebsocketEnabled(false, 'signOut');
 		cancelSyncOutboxWorker(authUserId);
 		setIsUserOpen(false);
 		setUserModalBusy(false);
@@ -5636,7 +5636,7 @@ export function App(): React.JSX.Element {
 			// note selections, and websocket rooms from surviving after workspace removal.
 			setAuthWorkspaceId(null);
 			manager.setActiveWorkspaceId(null);
-			manager.setWebsocketEnabled(false);
+			manager.setWebsocketEnabled(false, 'clearActiveWorkspaceState');
 			setSelectedNoteId(null);
 			setOpenDoc(null);
 			setOpenDocId(null);
@@ -5828,7 +5828,7 @@ export function App(): React.JSX.Element {
 					// raced ahead of this fetch response and called clearActiveWorkspaceState
 					// (which sets websocketEnabled=false).  The DELETE response already
 					// carries the new JWT session cookie, so it is safe to enable WS now.
-					manager.setWebsocketEnabled(true);
+					manager.setWebsocketEnabled(true, 'handleWorkspaceDeleted');
 				} else {
 					clearActiveWorkspaceState({ preserveAuthCache: true });
 				}
@@ -7929,7 +7929,7 @@ export function App(): React.JSX.Element {
 			// Disable WS before switching so the manager doesn't open rooms
 			// against the old server session (which still points at the previous
 			// workspace and would reject the new namespace with "forbidden").
-			manager.setWebsocketEnabled(false);
+			manager.setWebsocketEnabled(false, 'activateWorkspaceFromSidebar');
 			handleWorkspaceActivated(workspaceId);
 			void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 			if (isMobileViewport) {
@@ -7956,7 +7956,7 @@ export function App(): React.JSX.Element {
 				}
 				await confirmActivatedWorkspaceSession(workspaceId);
 				// Re-enable WS now that the server session points at the new workspace.
-				manager.setWebsocketEnabled(true);
+				manager.setWebsocketEnabled(true, 'activateWorkspaceFromSidebar#2');
 				void loadSidebarWorkspacesRef.current();
 			} catch (activateErr) {
 				// Network failed or server rejected — keep WS disabled (offline-like
@@ -8268,7 +8268,7 @@ export function App(): React.JSX.Element {
 				}
 				setAuthError(message);
 				setAuthStatus('unauth');
-				manager.setWebsocketEnabled(false);
+				manager.setWebsocketEnabled(false, 'submitAuth');
 				return;
 			}
 
@@ -8325,7 +8325,7 @@ export function App(): React.JSX.Element {
 				setAuthOfflineMode(false);
 				setAuthStatus('unauth');
 				manager.setActiveWorkspaceId(null);
-				manager.setWebsocketEnabled(false);
+				manager.setWebsocketEnabled(false, 'submitAuth#2');
 				setAuthError('Login succeeded, but the session could not be confirmed. The server may be temporarily unavailable — please try again. If this persists, check the production cookie and reverse-proxy setup.');
 				return;
 			}
@@ -8382,7 +8382,7 @@ export function App(): React.JSX.Element {
 					clearRegistrationInviteFromUrl();
 				}
 			}
-			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
+			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId), 'submitAuth#3');
 		} catch (error) {
 			// This branch is a stalled/aborted/unreachable request (the fetchWithTimeout
 			// calls above throwing), not the server rejecting bad credentials — that
@@ -8393,7 +8393,7 @@ export function App(): React.JSX.Element {
 			setAuthError(isNetworkUnavailableError(error) ? t('auth.connectionTimeout') : 'Authentication failed');
 			setAuthStatus('unauth');
 			setAuthUserRole(null);
-			manager.setWebsocketEnabled(false);
+			manager.setWebsocketEnabled(false, 'submitAuth#4');
 		} finally {
 			setAuthBusy(false);
 		}
@@ -13738,12 +13738,12 @@ export function App(): React.JSX.Element {
 				onBeforeWorkspaceActivated={() => {
 					// Disable WS before switching room namespaces. The new workspace's
 					// rooms must not connect until the server session cookie is updated.
-					manager.setWebsocketEnabled(false);
+					manager.setWebsocketEnabled(false, 'onBeforeWorkspaceActivated');
 				}}
 				onWorkspaceActivationComplete={(workspaceId) => {
 					// Server confirmed the new session cookie — safe to open WS rooms.
 					if (manager.getActiveWorkspaceId() === workspaceId) {
-						manager.setWebsocketEnabled(true);
+						manager.setWebsocketEnabled(true, 'onWorkspaceActivationComplete');
 					}
 				}}
 				onExportWorkspace={(wsId, wsName) => void exportWorkspace(wsId, wsName)}

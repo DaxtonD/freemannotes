@@ -1389,12 +1389,24 @@ const SCROLL_IDLE_PUBLISH_MS = 250;
 // synced by the time you can read it, instead of visibly updating once you get
 // there.
 //
-// Smaller on a phone. A whole extra screen of overscan roughly DOUBLES the batch
-// there, and the first prod measurement put the real handshake rate at ~4.3
-// sockets a second — so every room in the batch is about 230 ms of queue for
-// whatever is behind it. Desktop keeps the full screen: the window is taller, the
-// cards are smaller, and the handshake budget is not the constraint.
-const VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE = 0.5;
+// A full screen in both cases, and the phone value is a REVERSION — 1.21.7 cut it
+// to 0.5 to shorten the connect queue, and that was the wrong trade.
+//
+// What the lookahead actually buys is not speed, it is that a card connects and
+// settles to its final height BEFORE it scrolls into view. Halve it and the card
+// arrives first and resizes while the user is looking at it, which is visible and
+// reads as the grid twitching. Measured by the user on 1.21.7: "some note height
+// shifting happening when scrolling the grid".
+//
+// It costs much less than it did a version ago, because `connectRoomNow` connects
+// the note you open immediately and no longer depends on the rest of the batch
+// being short — so queue position for off-screen cards stopped being the thing
+// standing between the user and their data.
+//
+// This does NOT fix the first screenful on a cold boot, or a note that changes
+// while you are already looking at it. Only freezing the card height does (the
+// Google Keep treatment, step 4 in the plan).
+const VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE = 1;
 const VIEWPORT_CONNECT_OVERSCAN_RATIO_FINE = 1;
 
 // How many of your most recently opened notes stay connected wherever they are.

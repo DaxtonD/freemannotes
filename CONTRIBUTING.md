@@ -1334,10 +1334,39 @@ change would have silently done nothing there.
   pool would leave the bottom ones cold until you arrived there. They sort into tier 2, behind
   everything visible, so they cost on-screen notes no queue position — only batch size, which is
   why 8 became 5.
-- **`VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE` (0.5) vs `_FINE` (1).** A full extra screen of
-  overscan roughly doubles the batch on a phone, and at ~4.3 handshakes/second every extra room
-  is ~230 ms of queue for whatever is behind it. Desktop keeps the full screen: taller window,
-  smaller cards, and the handshake budget is not the constraint there.
+- **`VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE` / `_FINE` are both 1, and the phone value is a
+  reverted experiment.** 1.21.7 cut the coarse value to 0.5 to shorten the connect queue; the
+  user reported visible card-height twitching while scrolling and that was why. **What the
+  lookahead buys is not speed, it is that a card settles to its final height BEFORE it scrolls
+  into view.** Halve it and the card arrives first and resizes in front of the user. It is also
+  much cheaper than it was, because `connectRoomNow` means the note being opened no longer waits
+  behind the batch — so lookahead stopped competing with the thing the user is waiting for. If
+  you are tempted to trim it again for queue length, re-read this.
+
+### `setWebsocketEnabled` Takes a `reason`, and There Is a Live Mystery Behind It
+
+Two of three prod cold boots showed `setWebsocketEnabled(false)` followed by `(true)` ~640 ms
+later, **several seconds after startup had already enabled it**. It disconnects every provider
+and reconnects them all, and the concurrency trace priced it at **~3.9 s of connection work
+discarded** — open count reached 4, dropped to 0, and did not rebuild until ~10 s.
+
+There are ~28 call sites in App.tsx. Reading them did not find it: `refreshAuthenticatedProfile`
+looks like the shape but its disable branch leaves sync off rather than re-enabling,
+`activateWorkspaceFromSidebar` and `onBeforeWorkspaceActivated` are user-initiated switches that
+did not happen during the test, and `submitAuth` is the login form. So every call site now
+passes a short label, and the lifecycle log records it alongside the active workspace id.
+
+**The workspace id is in there because it decides the fix.** If the disable and the re-enable
+name the same workspace, no switch happened and the teardown was pure waste, which can be
+coalesced. If they differ, something is genuinely switching workspaces during startup and the
+fix belongs at that call site instead.
+
+**Do not add a debounce or coalescing to `setWebsocketEnabled` before that report exists.** The
+tempting fix (defer the disconnect briefly, cancel it if a matching enable arrives) would work
+and would also hide a spurious workspace switch if that is what this is. This repo has a
+documented five-for-five failure rate on diagnosing timing bugs by source-reading — see the
+media-sheet section — and every single thing that has actually been solved in this work was
+solved by a measurement or a user observation.
 
 ### Two traps specific to this
 

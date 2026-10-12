@@ -2,6 +2,20 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.8 - 2026-10-12
+
+### Fixed
+- **Note cards shouldn't twitch while you scroll any more.** We load notes a little beyond the edges of the screen so each one is ready by the time you reach it, and last version that was cut in half on phones to get connections going sooner. Wrong trade, and it took about ten minutes of real scrolling to see why: the point of looking ahead isn't speed, it's that a card settles to its final size *before* you can see it. Halved, the card arrives first and then resizes under your eyes. Put back.
+
+  It costs much less than it did a version ago, because the note you actually open now jumps straight to the front of the queue rather than waiting behind everything else — so looking further ahead no longer comes out of your own pocket.
+
+  This doesn't fix everything of that shape. The first screenful on a cold start still settles in front of you, and so does a note somebody changes while you're looking at it. The real answer there is to hold the card's height steady and only re-measure once you've opened the note, which is a bigger piece of work and is next.
+
+### Changed
+- **Startup now says who turned syncing off and on.** Two of three measured cold starts showed syncing being switched off and back on again about two thirds of a second later, several seconds *after* startup had already turned it on — which throws away every connection established up to that point and starts over. Measured cost: close to four seconds, and connections that had got to four open dropped to zero and didn't recover for another five.
+
+  There are twenty-eight places in the app that can flip that switch and reading all of them did not identify the culprit, which is unsurprising: this codebase has a perfect record of five wrong diagnoses out of five whenever anyone has tried to work out a timing bug by reading the source instead of measuring it. So the diagnostic now records which caller flipped the switch and which workspace was active at the time. One more startup report will name it, and then it gets fixed properly rather than smothered with a delay that might be hiding something worth knowing about.
+
 ## 1.21.7 - 2026-10-12
 
 ### Changed

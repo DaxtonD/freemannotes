@@ -514,13 +514,35 @@ export class DocumentManager {
 		return this.activeWorkspaceId;
 	}
 
-	public setWebsocketEnabled(enabled: boolean): void {
+	/**
+	 * Turn Yjs sync on or off wholesale.
+	 *
+	 * `reason` is diagnostic only and exists because of a measured, unexplained cost: two of
+	 * three prod cold boots showed this called with `false` and then `true` again about 640 ms
+	 * later, several seconds AFTER startup had already enabled it. The concurrency trace priced
+	 * it at ~3.9 s of connection work discarded and redone — open count reached 4, dropped to 0,
+	 * and took until 10 s to rebuild. There are ~28 call sites in App.tsx and reading them did
+	 * not identify which one fires; this codebase has a documented five-for-five failure rate on
+	 * diagnosing by source-reading (see the media-sheet note in CLAUDE.md), so the label goes in
+	 * and the next report names the caller.
+	 *
+	 * Do not add a debounce or coalescing here before that report. A spurious disable might be
+	 * something worth fixing at its source rather than papering over.
+	 */
+	public setWebsocketEnabled(enabled: boolean, reason?: string): void {
 		// This is intentionally idempotent and safe to call frequently.
 		// The App uses it to turn sync on/off based on authentication state.
 		const next = enabled === true;
 		if (this.websocketEnabled === next) return;
 		this.websocketEnabled = next;
-		recordSyncDiagLifecycle(`websocket-${next ? 'ENABLED' : 'DISABLED'} providers=${this.websocketProviders.size}`);
+		recordSyncDiagLifecycle(
+			`websocket-${next ? 'ENABLED' : 'DISABLED'} providers=${this.websocketProviders.size}`
+			+ ` by=${reason ?? 'unlabelled'}`
+			// The workspace id is here to answer the question that decides the fix: if a
+			// disable and the re-enable after it name the SAME workspace, no switch
+			// happened and the teardown was pure waste.
+			+ ` ws=${(this.activeWorkspaceId ?? 'none').slice(0, 8)}`
+		);
 		if (!next && typeof window !== 'undefined' && this.onlineReconnectTimer !== null) {
 			window.clearTimeout(this.onlineReconnectTimer);
 			this.onlineReconnectTimer = null;
