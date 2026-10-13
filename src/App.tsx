@@ -168,7 +168,6 @@ import {
 	readWorkspacesWithOfflineEdits,
 } from './core/workspaceOfflineEditMarkers';
 import { clearRoomOfflineEditMarkers } from './core/roomOfflineEditMarkers';
-import { clearNoteContentSeenState } from './core/noteContentSeenState';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -1810,10 +1809,24 @@ export function App(): React.JSX.Element {
 	const [manualRoomAliases, setManualRoomAliases] = React.useState<Record<string, string>>({});
 	const manualRoomAliasesRef = React.useRef<Record<string, string>>(manualRoomAliases);
 	manualRoomAliasesRef.current = manualRoomAliases;
+	/**
+	 * Compose the full alias map: server placements, then locally-registered manual aliases.
+	 *
+	 * **Reads the REF, not the state.** It used to close over `manualRoomAliases` as a
+	 * dependency while `ensureManualRoomAlias` below composed the same map from
+	 * `manualRoomAliasesRef.current`. Two composers, one working from whatever its closure
+	 * captured, so the map handed to DocumentManager oscillated between including and
+	 * excluding a manual alias.
+	 *
+	 * Not cosmetic: `setExternalRoomAliases` destroys any previous alias target absent from
+	 * the next map, so every swing tore down a live room. Caught in a lifecycle log as
+	 * `aliases=14` -> `15` -> `14` within two seconds, destroying a drawing's real room on
+	 * each pass, which is why that drawing never synced.
+	 */
 	const mergeExternalRoomAliases = React.useCallback((placements: readonly SharedNotePlacement[]): Record<string, string> => ({
 		...Object.fromEntries(placements.map((placement) => [placement.aliasId, placement.roomId] as const)),
-		...manualRoomAliases,
-	}), [manualRoomAliases]);
+		...manualRoomAliasesRef.current,
+	}), []);
 	const ensureManualRoomAlias = React.useCallback((aliasId: string, roomId: string): void => {
 		const normalizedAliasId = String(aliasId || '').trim();
 		const normalizedRoomId = String(roomId || '').trim();
@@ -1869,11 +1882,29 @@ export function App(): React.JSX.Element {
 		const normalizedRelatedNoteId = String(relatedNoteId || '').trim();
 		if (!normalizedRelatedNoteId) return '';
 		const relatedRoomId = resolveRelatedNoteRoomId(parentNoteId, normalizedRelatedNoteId);
-		if (relatedRoomId) {
-			ensureManualRoomAlias(normalizedRelatedNoteId, relatedRoomId);
+		if (!relatedRoomId) return normalizedRelatedNoteId;
+		// Never register an alias that points a note at the room it already resolves to.
+		//
+		// For a parent note in the ACTIVE workspace this used to do exactly that: the
+		// drawing's "external room" is `${activeWorkspaceId}:${drawingId}`, which is simply
+		// its own local room. Registering it turned an ordinary local room into an alias
+		// TARGET — and `setExternalRoomAliases` destroys any previous target that is missing
+		// from the next alias map, which happens whenever the map is rebuilt from server
+		// placements without this manual entry. `getDoc` then silently creates a fresh EMPTY
+		// document under the same name, and the drawing the user had just made read as an
+		// empty note and was discarded on save.
+		//
+		// Confirmed from a sync report: three rooms, all prefixed with the active workspace,
+		// destroyed as `stale-alias-target` on every single alias pass. A no-op alias buys
+		// nothing and costs the room, so don't create one. A genuinely foreign room (a
+		// drawing attached to a note shared from someone else's workspace) still needs the
+		// alias and still gets it.
+		if (relatedRoomId === manager.resolveRoomName(normalizedRelatedNoteId)) {
+			return normalizedRelatedNoteId;
 		}
+		ensureManualRoomAlias(normalizedRelatedNoteId, relatedRoomId);
 		return normalizedRelatedNoteId;
-	}, [ensureManualRoomAlias, resolveRelatedNoteRoomId]);
+	}, [ensureManualRoomAlias, manager, resolveRelatedNoteRoomId]);
 	// Piece four of four, and I mean it this time. Seeded the same way authWorkspaceId
 	// is above (cachedWorkspaceSelection, guarded by matching userId) instead of
 	// starting null. Combined with the
@@ -3844,7 +3875,21 @@ export function App(): React.JSX.Element {
 
 	const getPendingNewNoteDisposition = React.useCallback(
 		async (noteId: string): Promise<{ keep: boolean; type: 'text' | 'checklist' | 'drawing' }> => {
-			const doc = manager.getDoc(noteId);
+			// getDocReady, NOT getDoc. This function decides whether to DISCARD the user's
+			// note, and it was judging that against a document that may not have loaded yet:
+			// `getDoc` is synchronous, so if the room had been torn down for any reason it
+			// returns a brand-new empty doc while IndexedDB hydration is still in flight.
+			// Every content check below then reads empty and the note is thrown away. That is
+			// how a freshly drawn attached drawing came back as "empty note discarded" - the
+			// content was on disk the whole time, just not loaded yet.
+			//
+			// On failure we KEEP: discarding is the only irreversible outcome here.
+			let doc: Y.Doc | null = null;
+			try {
+				doc = await manager.getDocReady(noteId);
+			} catch {
+				return { keep: true, type: 'text' };
+			}
 			if (!doc) return { keep: true, type: 'text' };
 			const docId = manager.resolveRoomName(noteId);
 
@@ -5586,7 +5631,6 @@ export function App(): React.JSX.Element {
 		resetAttachedDrawingAccessRecovery();
 		clearWorkspaceOfflineEditMarkers();
 		clearRoomOfflineEditMarkers();
-		clearNoteContentSeenState();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();

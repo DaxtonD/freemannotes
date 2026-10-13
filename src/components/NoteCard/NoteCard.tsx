@@ -100,12 +100,6 @@ export type NoteCardProps = {
 	metaChips?: React.ReactNode;
 	canEdit?: boolean;
 	hasPendingSync?: boolean;
-	/**
-	 * This note's content changed since this device last showed it at full height, and the
-	 * card is being clamped to its old height rather than resizing under the user. Marks the
-	 * card so held-back content is visible rather than silently stale.
-	 */
-	hasUnseenChanges?: boolean;
 	isPinned?: boolean;
 	reminderAt?: string | null;
 	isMoreMenuOpen?: boolean;
@@ -2389,7 +2383,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${showLinkedDrawingPreview || showImageGridPreview ? ` ${styles.mediaPreviewCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}${props.hasUnseenChanges ? ` ${styles.cardUnseenChanges}` : ''}`}
+			className={`${styles.card}${showLinkedDrawingPreview || showImageGridPreview ? ` ${styles.mediaPreviewCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			data-drag-handle={props.useWholeCardDragHandle ? 'true' : undefined}

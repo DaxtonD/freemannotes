@@ -29,14 +29,6 @@ import { resolveNoteReminderAt } from '../../core/reminderLookup';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import { getDeviceId } from '../../core/deviceId';
-import {
-	markManyNoteContentSeen,
-	markNoteContentSeen,
-	pruneNoteContentSeenState,
-	readNoteContentSeenState,
-	resolveCardHold,
-	type NoteContentSeenMap,
-} from '../../core/noteContentSeenState';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import type { ViewMode } from '../../core/viewMode';
 import type { ListScrollAnchor } from './listScrollAnchor';
@@ -745,7 +737,6 @@ function addMonths(date: Date, months: number): Date {
 
 type GridNoteCardProps = {
 	note: Note;
-	hasUnseenChanges?: boolean;
 	docId: string | null;
 	authUserId?: string | null;
 	themeId: ThemeId;
@@ -1166,7 +1157,6 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					isPinned={props.note.isPinned}
 					reminderAt={props.reminderAt}
 					forcedHeightPx={props.forcedHeightPx}
-					hasUnseenChanges={props.hasUnseenChanges}
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
@@ -2448,135 +2438,6 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		});
 	}, [docsById, manager, metadataVersion, orderedIds, pinPrefsSnapshot, props.authUserId, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
-
-	// ── Hold a card's height until you have actually looked at it ──────────
-	//
-	// The third of the three data-delivery complaints: cards changing size while
-	// you look at them. Viewport-driven sockets made it MORE visible rather than
-	// less — before, every note synced inside the first ~20 s of a boot, so the
-	// shifting happened early and in bulk; now a note syncs when you scroll to
-	// it, so it resizes on arrival, in front of you.
-	//
-	// So: when a note's content is newer than the version this device last showed
-	// at full height, clamp the card to the height it already had and mark it.
-	// Opening the note is what releases it — the re-measure then happens behind
-	// the editor overlay, so the grid is already correct when it closes. That is
-	// the behaviour the user asked for, and what Keep does.
-	const seenScope = React.useMemo(
-		() => ({ userId: props.authUserId ?? null, deviceId: props.deviceId ?? null }),
-		[props.authUserId, props.deviceId]
-	);
-	const [seenStateVersion, setSeenStateVersion] = React.useState(0);
-	const noteContentSeen = React.useMemo<NoteContentSeenMap>(() => {
-		void seenStateVersion;
-		return readNoteContentSeenState(seenScope);
-	}, [seenScope, seenStateVersion]);
-
-	// Seed notes this device has never tracked, WITHOUT flagging them. On a cold boot this
-	// runs against the IndexedDB content (the grid renders from it at ~400 ms, well before any
-	// socket opens), so the seed captures the stale timestamp and the fresher one arriving over
-	// the socket is correctly reported as a change. See noteContentSeenState.ts.
-	React.useEffect(() => {
-		if (!seenScope.userId || !seenScope.deviceId) return;
-		const pending: { noteId: string; updatedAt: number }[] = [];
-		for (const note of noteSnapshots) {
-			if (noteContentSeen[note.id] !== undefined) continue;
-			if (typeof note.updatedAt !== 'number' || !Number.isFinite(note.updatedAt)) continue;
-			pending.push({ noteId: note.id, updatedAt: note.updatedAt });
-		}
-		if (pending.length === 0) return;
-		markManyNoteContentSeen(seenScope, pending);
-		setSeenStateVersion((version) => version + 1);
-	}, [noteContentSeen, noteSnapshots, seenScope]);
-
-	// Refs so the subscriber below can stay mounted across renders. Without them its deps
-	// would include `noteSnapshots`, which changes on every metadata bump, and it would
-	// resubscribe constantly.
-	const seenSelectedNoteIdRef = React.useRef<string | null>(null);
-	seenSelectedNoteIdRef.current = props.selectedNoteId ?? null;
-	const seenScopeRef = React.useRef(seenScope);
-	seenScopeRef.current = seenScope;
-	const seenOrderedIdsRef = React.useRef<readonly string[]>([]);
-	seenOrderedIdsRef.current = orderedIds;
-
-	const liveUpdatedAtFor = React.useCallback((noteId: string): number => {
-		const doc = docsByIdRef.current[noteId] ?? manager.peekDoc(noteId) ?? null;
-		if (!doc) return 0;
-		const value = Number(doc.getMap('metadata').get('updatedAt') ?? 0);
-		return Number.isFinite(value) && value > 0 ? value : 0;
-	}, [manager]);
-
-	// Opening a note is catching up on it, and so is CLOSING it — by then the user's own edits
-	// have advanced `updatedAt` past whatever was recorded on open, and without marking it
-	// again the card would come back flagged as changed by the user's own typing.
-	const previousSelectedNoteIdRef = React.useRef<string | null>(null);
-	React.useEffect(() => {
-		const scope = seenScopeRef.current;
-		if (!scope.userId || !scope.deviceId) return;
-		const previous = previousSelectedNoteIdRef.current;
-		const current = props.selectedNoteId ?? null;
-		previousSelectedNoteIdRef.current = current;
-		let changed = false;
-		for (const noteId of [previous, current]) {
-			if (!noteId) continue;
-			const updatedAt = liveUpdatedAtFor(noteId);
-			if (updatedAt <= 0) continue;
-			if (readNoteContentSeenState(scope)[noteId] === updatedAt) continue;
-			markNoteContentSeen(scope, noteId, updatedAt);
-			changed = true;
-		}
-		if (changed) setSeenStateVersion((version) => version + 1);
-	}, [liveUpdatedAtFor, props.selectedNoteId]);
-
-	// A local edit is not news. Ticking a checkbox on a card advances `updatedAt` exactly as a
-	// collaborator's edit does, so without this the card would clamp its height mid-tap and
-	// show a "changed" marker for something the user just did themselves.
-	React.useEffect(() => {
-		if (!seenScope.userId || !seenScope.deviceId) return;
-		return manager.subscribeLocalNoteEdit((roomName) => {
-			const scope = seenScopeRef.current;
-			if (!scope.userId || !scope.deviceId) return;
-			// The note open in the editor is deliberately NOT tracked here. `updatedAt` is
-			// stamped on every local transaction, so an open editor emits one of these per
-			// keystroke, and bumping state each time would re-render the whole grid while
-			// someone is typing. An open note is never held anyway (resolveCardHold returns
-			// early for it), and the open/close effect above records the final value.
-			const openNoteId = seenSelectedNoteIdRef.current;
-			if (openNoteId && roomName === manager.resolveRoomName(openNoteId)) return;
-			// Resolve the room lazily. Building a note-id map up front would mean depending on
-			// `noteSnapshots` and resubscribing on every metadata change.
-			const noteId = seenOrderedIdsRef.current.find((id) => {
-				try {
-					return manager.resolveRoomName(id) === roomName;
-				} catch {
-					return false;
-				}
-			});
-			if (!noteId) return;
-			const updatedAt = liveUpdatedAtFor(noteId);
-			if (updatedAt <= 0) return;
-			if (readNoteContentSeenState(scope)[noteId] === updatedAt) return;
-			markNoteContentSeen(scope, noteId, updatedAt);
-			setSeenStateVersion((version) => version + 1);
-		});
-	}, [liveUpdatedAtFor, manager, seenScope]);
-
-	// Keep the map bounded to the notes that still exist.
-	React.useEffect(() => {
-		if (!seenScope.userId || !seenScope.deviceId) return;
-		if (orderedIds.length === 0) return;
-		pruneNoteContentSeenState(seenScope, orderedIds);
-	}, [orderedIds, seenScope]);
-
-	const resolveCardHoldFor = React.useCallback(
-		(noteId: string, updatedAt: number) => resolveCardHold({
-			updatedAt,
-			seenUpdatedAt: noteContentSeen[noteId],
-			measuredHeightPx: noteHeightByIdRef.current.get(noteId) ?? null,
-			isOpen: props.selectedNoteId === noteId,
-		}),
-		[noteContentSeen, props.selectedNoteId]
-	);
 	const unresolvedOrderedIds = React.useMemo(
 		() => orderedIds.filter((id) => {
 			const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
@@ -4650,8 +4511,6 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		const isSnapshotCard = !hasRenderableLiveDoc && Boolean(snapshotDoc);
 		const isPlaceholder = dragManager.activeDragId === note.id;
 		const cachedMeasuredHeightPx = noteHeightByIdRef.current.get(note.id) ?? null;
-		// Changed since this device last showed it? Then the card keeps the height it had.
-		const cardHold = resolveCardHoldFor(note.id, noteSnapshotById.get(note.id)?.updatedAt ?? 0);
 		const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 		const snapshotShell = workspaceRenderSnapshotNoteById.get(note.id) ?? null;
 		const noteType = String(doc.getMap('metadata').get('type') ?? 'text') === 'checklist' ? 'checklist' : 'text';
@@ -4740,16 +4599,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 					themeId: props.themeId,
 					title,
 				})}
-				// The card is CLAMPED, not mis-measured. CONTRIBUTING records that withholding a
-				// real measurement to stop a card moving broke virtualization and drag in
-				// 1.11.1 — the virtualizer needs true heights. Forcing the height means the
-				// element genuinely IS that tall, so the ResizeObserver measures the truth and
-				// the content is simply clipped.
-				forcedHeightPx={
-					cardHold.holdHeightPx
-					?? (isSnapshotCard && cachedMeasuredHeightPx && cachedMeasuredHeightPx > 0 ? cachedMeasuredHeightPx : undefined)
-				}
-				hasUnseenChanges={cardHold.changed}
+				forcedHeightPx={isSnapshotCard && cachedMeasuredHeightPx && cachedMeasuredHeightPx > 0 ? cachedMeasuredHeightPx : undefined}
 				canEdit={canEditNote}
 				hasPendingSync={pendingSyncNoteIds.has(note.id)}
 				selected={props.selectedNoteId === note.id}

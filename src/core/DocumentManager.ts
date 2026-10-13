@@ -239,20 +239,6 @@ export class DocumentManager {
 	private readonly updatedAtDocs = new Set<string>();
 	private readonly localEditTrackedRooms = new Set<string>();
 	/**
-	 * Listeners for "a local edit just landed on this room".
-	 *
-	 * Added for the card-height hold: a card is held and marked when its content changes
-	 * since this device last showed it, and without this signal the user's OWN actions would
-	 * trip it. Tick a checkbox on a card and `updatedAt` advances exactly as it does for a
-	 * collaborator's edit, so the card would clamp its height mid-interaction and show a
-	 * "something changed" marker for a change the user just made themselves.
-	 *
-	 * One hook rather than marking seen at each interaction site, because the grid has
-	 * several (checklist items, completed items, links) and the editor has many more, and a
-	 * missed one is an obviously-wrong card.
-	 */
-	private readonly localEditListeners = new Set<(roomName: string) => void>();
-	/**
 	 * Room -> the last time anything wanted it connected, as epoch ms.
 	 *
 	 * Opening a socket used to be a side effect of asking for a document, which made "do not
@@ -630,12 +616,25 @@ export class DocumentManager {
 		// destroying rooms on every refreshNoteShareState, so how often it runs and how much
 		// it destroys is worth being able to see rather than infer.
 		let destroyedForAliases = 0;
+		const destroyedRoomNames: string[] = [];
 		for (const roomName of previousRoomNames) {
 			if (nextRoomNames.has(roomName)) continue;
+			// Never bin a room belonging to the workspace we are looking at. A stale alias
+			// target that genuinely needs collecting lives in SOMEONE ELSE'S workspace — that
+			// is what made it an alias. A room under the active workspace's own prefix is just
+			// a local note, and destroying one takes its unsaved content with it, because
+			// `getDoc` will cheerfully build an empty replacement under the same name.
+			//
+			// The second loop below has had the equivalent guard all along
+			// (`rawAliasRoomName === roomName` -> skip); this one did not, and that asymmetry
+			// is what made attached drawings unsaveable.
+			if (this.activeWorkspaceId && roomName.startsWith(`${this.activeWorkspaceId}:`)) continue;
 			this.pendingSyncRooms.delete(roomName);
 			if (this.docs.has(roomName)) {
-				this.destroyRoom(roomName, 'stale-alias-target');
-				destroyedForAliases++;
+				if (this.destroyRoom(roomName, 'stale-alias-target')) {
+					destroyedForAliases++;
+					destroyedRoomNames.push(roomName);
+				}
 			}
 		}
 
@@ -644,12 +643,24 @@ export class DocumentManager {
 			if (rawAliasRoomName === roomName) continue;
 			this.pendingSyncRooms.delete(rawAliasRoomName);
 			if (this.docs.has(rawAliasRoomName)) {
-				this.destroyRoom(rawAliasRoomName, 'alias-shadowed-local-room');
-				destroyedForAliases++;
+				if (this.destroyRoom(rawAliasRoomName, 'alias-shadowed-local-room')) {
+					destroyedForAliases++;
+					destroyedRoomNames.push(rawAliasRoomName);
+				}
 			}
 		}
 		if (destroyedForAliases > 0) {
-			recordSyncDiagLifecycle(`external-aliases destroyed=${destroyedForAliases} aliases=${nextAliases.size}`);
+			// The NAMES, not just a count. A drawing created on a note stopped being saveable
+			// ("empty note discarded"), and the suspicion is this path: the alias map is
+			// rebuilt from server placements merged with locally-registered manual aliases,
+			// and if a freshly-created drawing's manual alias is missing from that merge its
+			// room lands in `previousRoomNames` without being in `nextRoomNames` and gets
+			// destroyed. `getDoc` then silently creates a replacement EMPTY doc, which reads
+			// as an empty note and is discarded. Counting was not enough to confirm it.
+			recordSyncDiagLifecycle(
+				`external-aliases destroyed=${destroyedForAliases} aliases=${nextAliases.size}`
+				+ ` rooms=[${destroyedRoomNames.join(' ')}]`
+			);
 		}
 
 		this.externalRoomAliases.clear();
@@ -1345,11 +1356,32 @@ export class DocumentManager {
 		this.destroyRoom(this.roomNameFor(raw));
 	}
 
-	private destroyRoom(roomName: string, reason?: string): void {
+	/**
+	 * Tear a room down completely — document, IndexedDB provider and socket.
+	 *
+	 * Returns false when it refuses. **It refuses for a room holding local edits the server
+	 * has not seen**, because destroying one of those is not a tidy-up, it is throwing away
+	 * the user's work: `getDoc` will happily create a fresh empty document under the same
+	 * name afterwards, and nothing downstream can tell the difference between "this note is
+	 * empty" and "this note was destroyed before it synced". A note created offline and then
+	 * caught by an alias refresh would simply vanish.
+	 *
+	 * The cost of refusing is a room lingering under a name the alias map no longer wants,
+	 * which is untidy and recoverable. The cost of not refusing is lost data. Once the room
+	 * syncs its marker clears and a later pass can collect it.
+	 */
+	private destroyRoom(roomName: string, reason?: string): boolean {
 		const doc = this.docs.get(roomName);
-		if (!doc) return;
+		if (!doc) return false;
 
 		logClientEvent('DOC_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'doc-destroy' });
+		if (hasRoomOfflineEdit(roomName)) {
+			console.warn(
+				`[yjs] refusing to destroy room with unsent local edits — ${roomName} (reason=${reason ?? 'unspecified'})`
+			);
+			recordSyncDiagLifecycle(`destroy-REFUSED room=${roomName} reason=${reason ?? 'unspecified'} (unsent edits)`);
+			return false;
+		}
 		recordSyncDiagRoomDestroyed(roomName, reason);
 		clearNoteDebugSession(roomName);
 
@@ -1395,6 +1427,7 @@ export class DocumentManager {
 		doc.destroy();
 		this.updateConnectionState();
 		this.emitConnectionStatus();
+		return true;
 	}
 
 	private teardownAllRooms(): void {
@@ -2556,21 +2589,6 @@ export class DocumentManager {
 		return roomName.slice(0, separator);
 	}
 
-	/**
-	 * Notify me when a local edit lands on a room.
-	 *
-	 * Fires for genuine user edits only — the same filters the offline-edit marker uses, so
-	 * internal/structural writes and remote updates are already excluded. The argument is a
-	 * ROOM name, not a note id; callers that key by note id should resolve through
-	 * `resolveRoomName`, because an aliased shared note's room does not contain its alias id.
-	 */
-	public subscribeLocalNoteEdit(listener: (roomName: string) => void): () => void {
-		this.localEditListeners.add(listener);
-		return () => {
-			this.localEditListeners.delete(listener);
-		};
-	}
-
 	/** Is there a live, connected socket for this room right now? */
 	private isRoomConnected(roomName: string): boolean {
 		return (this.websocketProviders.get(roomName) as any)?.wsconnected === true;
@@ -2620,18 +2638,6 @@ export class DocumentManager {
 			// Without this filter, routine registry mutations could produce false-positive sync indicators
 			// after refresh/startup even when no actual note content edits occurred offline.
 			if (this.isNotesRegistryRoom(roomName)) return;
-			// Below the registry guard and above the pending-sync bookkeeping: subscribers want
-			// real edits to real notes, and they want them whether or not a socket exists.
-			if (tx.changed.size > 0 && this.localEditListeners.size > 0) {
-				for (const listener of this.localEditListeners) {
-					try {
-						listener(roomName);
-					} catch (err) {
-						const msg = err instanceof Error ? err.message : String(err);
-						console.warn(`[yjs] local-edit listener failed for room=${roomName}: ${msg}`);
-					}
-				}
-			}
 			// Skip transactions that didn't actually change any Y.Types (e.g. structure
 			// assertions, read-only bindings). Without this guard, editor mount can mark a
 			// room as pending even when no content was modified.

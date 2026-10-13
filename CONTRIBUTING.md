@@ -1192,69 +1192,81 @@ providers itself, and second-guessing it on a transient reading is what caused t
 Pending timers are keyed **per room**. They were a flat set, so any new pass cancelled every
 pending connect including rooms it was not being asked about.
 
-## Cards Hold Their Height Until You Have Looked At Them
+## Holding a Card's Height Was Tried Twice and Reverted Twice — Read Before Attempt Three
 
-**The problem got worse before it got better, and that is the useful part.** Card-height
-shifting was the third of the three original delivery complaints. When the app opened a socket
-per note, every note synced inside the first ~20 s of a cold boot, so the shifting happened
-early and in bulk. Once sockets became viewport-driven, a note syncs *when you scroll to it* —
-so it resizes on arrival, in front of the user. Less total movement, much more irritating.
-Found by scrolling a real phone, not by reading anything.
+**Shipped in 1.21.9, reverted whole in 1.22.0.** The goal is the user's own, and it is still
+wanted: when somebody else changes a note, don't resize the card under the reader — mark it, hold
+it, and re-measure once they have opened it. Google Keep does this. The goal is good. Both
+implementations of it produced more problems than the problem they solved.
 
-`noteContentSeenState.ts` holds the decision as a pure, tested function. The rules:
+### Why this is harder than it looks
 
-- A note whose `updatedAt` is newer than the version **this device** last showed at full height
-  is `changed`, and the card is clamped to its last measured height.
-- **The open note is never held.** Opening it is how the user catches up, and the re-measure
-  then happens behind the editor overlay so the grid is correct by the time it closes.
-- A note with no record is **seeded silently, not flagged**. This looks like it would defeat the
-  whole thing on the boot where it matters most, and does not: the grid renders from IndexedDB
-  at ~400 ms, before any socket opens, so the seed captures the STALE timestamp and the fresher
-  one arriving over the socket is correctly flagged.
-- A `changed` note with no measured height is not held — there is nothing to hold it at and
-  nothing has moved.
+**A card's height is a function of its content.** "Hold the height but show the new content" is
+therefore a contradiction, and every version of this ran into it from a different direction:
 
-### Three traps, all of them real
+- **Attempt A — clamp the card** (`forcedHeightPx`). New checklist items pushed the
+  completed-items dropdown and the URL preview rail below the clip line, so **interactive
+  controls silently disappeared.** Content was clipped with no affordance.
+- **Attempt B — clamp, and shrink the content budget to match.** The card already computes how
+  many items fit by subtracting header, meta row, preview rail and padding from
+  `maxCardHeightPx`, so capping that made the item list absorb the squeeze and show its existing
+  "+N more", with the controls staying put. This *worked*, and the user confirmed it. He then
+  said he would prefer the card not be squeezed at all.
+- **Attempt C — render the version the device last showed.** The card is internally consistent,
+  nothing hidden or squeezed, and the ring says something newer is waiting. This is the most
+  correct-looking of the three and it is where everything came apart.
 
-**The card is CLAMPED, never mis-measured.** See "Virtualizer must get real heights" in
-CLAUDE.md: withholding a real measurement to stop a card moving broke virtualization and drag in
-1.11.1. `forcedHeightPx` makes the element genuinely that tall, so the ResizeObserver measures
-the truth and the content is simply clipped. If you ever find yourself returning a stale number
-from the height map instead, you are repeating 1.11.1.
+### What attempt C actually costs, and this is the part to understand
 
-**A local edit is not news, and finding out needs one hook, not many.**
-`DocumentManager.subscribeLocalNoteEdit` exists for this. Ticking a checkbox on a card advances
-`updatedAt` exactly as a collaborator's edit does, so without it the card clamps mid-tap and
-flags the user about their own action. Marking "seen" at each interaction site instead would
-mean the grid's checklist/completed/link handlers *and* every path in the editor — and a missed
-one is a visibly wrong card.
+Rendering last-seen content turns the card into a **stale snapshot**, and that cascades:
 
-**`updatedAt` is stamped on every local transaction, i.e. every keystroke.** The first version
-of the subscriber bumped React state each time, re-rendering the whole grid per character typed.
-The open note is therefore excluded from the subscriber entirely (it is never held anyway), and
-the open/close effect records the final value — **including on close**, because by then the
-user's own edits have advanced `updatedAt` past whatever was recorded on open, and without that
-second mark the card comes back flagged by its own author's typing.
+- **`isSnapshotCard` disables editing.** Correct, not a bug: a checkbox tick writes to the LIVE
+  doc while the user is looking at an older version, so it could land on the wrong item. But it
+  means a held card loses interactions, which the user had explicitly ruled out.
+- **The chips fight the card.** `NoteAttachmentCountChip` reads its own counts from the media and
+  document stores and refreshes on the very events that caused the hold, so the card body showed
+  last-seen content while the chip above it showed the new number. Suspending chip refresh for
+  held cards papered over it; it is a symptom of two sources of truth on one card.
+- **Attachments do not live in the Yjs doc.** Images, documents and link records are SQL rows
+  delivered over `/ws/metadata`, so they never move `updatedAt` and the timestamp comparison
+  cannot see them. That needed a second input, a second persisted store, a local-vs-remote
+  `source` on three emitters, and a docId→noteId reverse lookup. Each piece was individually
+  reasonable; together they were a parallel rendering mode nobody could hold in their head.
+- **Freshness state is per-device and has no natural home.** `lastAccessedAt` is shared Yjs
+  metadata, so a collaborator opening a note updates it for you. The device-local map that
+  replaced it had to be seeded, pruned, cleared on logout, and reconciled with local edits.
 
-### Why `updatedAt` and a device-local map
+### The traps that cost real time
 
-`lastAccessedAt` is shared Yjs metadata, so it cannot mean "since *you* last looked" — a
-collaborator opening a note updates it for you too. `updatedAt` is shared and that is correct:
-it describes the content, not a viewer. The per-viewer half is device-local in localStorage,
-because "has this screen shown you this version" is a question about the screen. Note ids and
-timestamps only; pruned against the current workspace; cleared on logout.
+- **`updatedAt` is stamped on EVERY local transaction, i.e. every keystroke.** Subscribing to
+  local edits and bumping React state each time re-rendered the whole grid per character typed.
+- **A local edit is not news.** Ticking a checkbox advances `updatedAt` exactly as a
+  collaborator's edit does, so without care the card froze mid-tap and flagged the user about
+  their own action. `DocumentManager.subscribeLocalNoteEdit` existed solely for this.
+- **Marking "seen" on open is not enough — you must mark on CLOSE too.** By then the user's own
+  edits have advanced `updatedAt` past whatever was recorded on open, so the card comes back
+  flagged by its own author's typing.
+- **Seeding must be silent.** A note with no record is recorded, not flagged. That only works
+  because the grid renders from IndexedDB (~400 ms) before any socket opens, so the seed captures
+  the STALE timestamp and the fresher one is correctly flagged when it arrives.
+- **Never withhold a real measurement to stop a card moving.** See "Virtualizer must get real
+  heights" in CLAUDE.md — that broke virtualization and drag in 1.11.1. Clamping is acceptable
+  because the element genuinely IS that tall; lying about the measurement is not.
 
-**`pruneNoteContentSeenState` refuses to prune against an empty note list.** The grid's ordered
-ids are empty until the registry hydrates, and pruning there would wipe the map and flag every
-note in the workspace on the next pass.
+### If there is an attempt three
 
-### The CSS is pseudo-elements, not box-shadow
+**Do the server-side note digest first** (step 3 of the sync-delivery plan). Every version of this
+failed while trying to infer what a card *should* look like from data the client happens to hold.
+With a digest the correct size and shape of a card is known rather than guessed, which removes the
+need for a parallel "last-seen" rendering mode — the thing that generated most of the damage.
 
-`.card` already owns `box-shadow: inset 0 0 0 1px var(--note-card-banner-highlight, ...)` — that
-is how the banner highlight is drawn. Setting `box-shadow` on the changed-card class would
-silently replace it for any note with a banner. The ring is a `::before` and the dot an
-`::after`. A ring and not a border, because a border changes the box and would shift the layout
-of the card being held still.
+**Attempt B is the fallback if the feature is wanted before the digest.** It worked, the user
+confirmed it, and its only objection was aesthetic. It keeps one source of truth per card and
+touches far less: no stale rendering, no second persisted store, no local/remote event plumbing,
+no disabled interactions.
+
+**Do not start from attempt C.** It looks like the best answer and it is the most expensive one.
+
 
 ## Connections Go Where Attention Is, Not Where Documents Are
 

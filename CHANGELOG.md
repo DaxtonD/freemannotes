@@ -2,6 +2,35 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.22.0 - 2026-10-12
+
+### Removed
+- **The "this card changed while you were away" treatment is gone again.** It arrived in 1.21.9 and it is being taken out whole, because making it work properly broke rather a lot of other things on the way: duplicated images, attached drawings that could not be saved, link removals behaving differently from text edits, and enough besides that the person testing it stopped writing them down. Cards go back to resizing when new data arrives, which is what they did for the previous year.
+
+  The idea is still a good one and it is still wanted - don't resize a note card under somebody who is reading it; mark it, hold it, and only re-measure once they've opened it. Three versions of it were built. One of them genuinely worked. The trouble is that a card's height is decided by what is inside it, so "keep the height but show the new content" is a contradiction, and each attempt ran into that from a different direction - clipping the completed-items dropdown off the bottom, squeezing the item list, or showing an older copy of the note and then having to disable editing on it so a stray tap couldn't tick the wrong thing.
+
+  Written up properly in CONTRIBUTING for whoever picks it up next, including which attempt to start from and which one to avoid despite it looking like the best answer.
+
+### Fixed
+- **Attached drawings save again.** The function that decides whether a new note is empty enough to throw away was asking for the note's document *synchronously* - and if that document had been torn down for any reason, it got handed a brand new blank one while the real contents were still being read from local storage. So it looked at an empty note and discarded it. Your drawing was on disk the entire time. It now waits for the document to actually load, and if anything goes wrong it keeps the note rather than binning it, because only one of those two mistakes is permanent.
+
+- **One image per upload.** Same root cause as the drawings: a note's room being destroyed and rebuilt underneath an upload in progress.
+
+- **Stopped destroying perfectly good notes during routine housekeeping.** Three separate faults, all in the bookkeeping that tracks notes belonging to other people's workspaces:
+
+  A drawing attached to one of your own notes was being registered as living "elsewhere", with "elsewhere" being its own room. That pointless entry was enough to make the cleanup routine treat an ordinary local note as something to collect.
+
+  The cleanup had a guard against deleting your own workspace's rooms in one place and not the other.
+
+  And two different parts of the app built the list of other-workspace notes from two different copies of the same data, one of them stale - so the list flickered between fourteen and fifteen entries within a couple of seconds, and the cleanup dutifully destroyed a live room on every flicker.
+
+  That last one is why one drawing never synced at all, and the first one explains the handful of notes that have shown up as "never synced" in every diagnostic report since 1.21.3. **That count is now zero**, which also quietly closes a bug we had attributed to something else entirely and attempted to fix three times.
+
+- **Nothing gets torn down while it still has edits the server hasn't seen.** Destroying one of those is not housekeeping, it is discarding somebody's work - and nothing further down can tell the difference between "this note is empty" and "this note was destroyed before it finished saving".
+
+### Changed
+- The sync diagnostic now names the rooms it destroys rather than just counting them. That one line is what turned four releases of guesswork into a diagnosis.
+
 ## 1.21.9 - 2026-10-12
 
 ### Added
