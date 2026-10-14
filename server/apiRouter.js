@@ -434,6 +434,118 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		}
 	}
 
+	// ─── Orphaned-document audit ─────────────────────────────────────────
+	//
+	// A row in `document` that no registry claims is invisible in the grid and the trash (both
+	// render from the registry) while /api/search still finds it, because search queries the
+	// table directly. That combination is what a user reported as "I can't find this note but
+	// search can, and I can still edit it".
+	//
+	// Four exclusions, and every one of them is load-bearing:
+	//
+	//   - **Attached drawings.** These legitimately do NOT appear in noteOrder - they live in
+	//     their own rooms, referenced by a parent note's top-level `drawingIds` array. An
+	//     earlier version of this audit read drawingIds off the metadata MAP instead and so
+	//     reported zero attached drawings, which inflated the orphan count by 39 and would
+	//     have deleted every drawing in the account. Caught only because zero was implausible.
+	//   - **Registry rooms** - not notes.
+	//   - **Markup rooms** (`markup:*`) - these belong to a document version, not a workspace.
+	//   - **Anything recent.** A note being drafted right now is not in the registry yet, so
+	//     it looks exactly like an orphan. Deleting one would destroy work in progress.
+	const ORPHAN_MIN_AGE_MS = 30 * 60 * 1000;
+
+	async function collectWorkspaceDrawingReferences(workspaceId) {
+		const rows = await prisma.document.findMany({
+			where: { workspaceId },
+			select: { state: true },
+		});
+		const referenced = new Set();
+		for (const row of rows) {
+			if (!row.state || row.state.length === 0) continue;
+			const doc = new Y.Doc();
+			try {
+				Y.applyUpdate(doc, new Uint8Array(row.state));
+				for (const id of doc.getArray('drawingIds').toArray()) {
+					const value = String(id ?? '').trim();
+					if (value) referenced.add(value);
+				}
+			} catch {
+				// A row we cannot decode contributes no references; it is reported on its own.
+			} finally {
+				doc.destroy();
+			}
+		}
+		return referenced;
+	}
+
+	/**
+	 * Everything about a workspace needed to decide what is stale, plus enough detail for a
+	 * human to sanity-check the list before anything is deleted.
+	 */
+	async function auditWorkspaceOrphans(workspaceId) {
+		const registry = await readWorkspaceRegistryNoteIds(workspaceId);
+		const referencedDrawings = await collectWorkspaceDrawingReferences(workspaceId);
+		const rows = await prisma.document.findMany({
+			where: { workspaceId },
+			select: { docId: true, state: true, createdAt: true, updatedAt: true },
+			orderBy: { createdAt: 'asc' },
+		});
+
+		const prefix = `${workspaceId}:`;
+		const cutoff = Date.now() - ORPHAN_MIN_AGE_MS;
+		const orphans = [];
+		let noteRows = 0;
+		let attachedDrawings = 0;
+		let tooRecent = 0;
+
+		for (const row of rows) {
+			if (!isDigestEligibleDocId(row.docId)) continue;
+			noteRows += 1;
+			const bare = row.docId.startsWith(prefix) ? row.docId.slice(prefix.length) : row.docId;
+			if (registry && registry.orderIds.has(bare)) continue;
+			if (referencedDrawings.has(bare)) {
+				attachedDrawings += 1;
+				continue;
+			}
+			if (row.createdAt.getTime() > cutoff || row.updatedAt.getTime() > cutoff) {
+				tooRecent += 1;
+				continue;
+			}
+			const projected = projectNoteDigestFromState(row.state, bare, row.updatedAt);
+			const checklistChars = projected
+				? projected.checklistItems.reduce((sum, item) => sum + String(item.text || '').length, 0)
+				: 0;
+			const contentChars = projected ? projected.contentLength : 0;
+			const titleText = projected ? String(projected.title || '').trim() : '';
+			orphans.push({
+				noteId: bare,
+				docId: row.docId,
+				type: projected ? projected.type : 'unknown',
+				title: titleText,
+				// Enough for a person to recognise a note they want to keep, without shipping
+				// the whole thing to the client.
+				preview: projected ? String(projected.contentPreview || '').slice(0, 160) : '',
+				contentChars,
+				checklistItemCount: projected ? projected.checklistItemCount : 0,
+				checklistChars,
+				trashed: projected ? projected.trashed : false,
+				hasContent: titleText.length > 0 || contentChars > 0 || checklistChars > 0,
+				createdAt: row.createdAt.toISOString(),
+				updatedAt: row.updatedAt.toISOString(),
+				bytes: row.state ? row.state.length : 0,
+			});
+		}
+
+		return {
+			workspaceId,
+			registryNoteCount: registry ? registry.orderIds.size : null,
+			documentNoteRows: noteRows,
+			attachedDrawings,
+			skippedTooRecent: tooRecent,
+			orphans,
+		};
+	}
+
 	// Which note ids the workspace's registry actually claims.
 	//
 	// The grid renders from the registry's noteOrder, NOT from the document table, so the two
@@ -1175,6 +1287,135 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				serverTimeUtc: now.toISOString(),
 				serverTimeLocal: fmt(now),
 			});
+			return true;
+		}
+
+		// What the grid thinks exists vs what the database holds, and exactly which rows are
+		// unaccounted for. READ-ONLY - deleting is a separate, explicit call.
+		if (pathname === '/api/maintenance/orphan-documents' && method === 'GET') {
+			(async () => {
+				try {
+					const userId = requireAuthUserId();
+					if (!userId) return;
+					const requestedWorkspaceId = String(url.searchParams.get('workspaceId') ?? '').trim()
+						|| getSessionWorkspaceId();
+					if (!requestedWorkspaceId) {
+						jsonResponse(res, 400, { error: 'No workspace specified' });
+						return;
+					}
+					const member = await findLiveWorkspaceMembership(prisma, userId, requestedWorkspaceId, { role: true });
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					const audit = await auditWorkspaceOrphans(requestedWorkspaceId);
+					jsonResponse(res, 200, audit);
+				} catch (error) {
+					console.error('[api] Orphan audit failed:', error.message);
+					jsonResponse(res, 500, { error: 'Failed to audit documents' });
+				}
+			})();
+			return true;
+		}
+
+		// Delete specific orphaned rows.
+		//
+		// Takes the EXPLICIT list of note ids the client showed the user, rather than a
+		// "delete everything stale" flag. That is the whole point: the user consents to a list
+		// they have read, and anything that became stale between the preview and the
+		// confirmation is not silently swept up with it. Each id is re-checked server-side
+		// before deletion, so a stale or hand-edited list cannot delete a live note.
+		//
+		// OWNER/ADMIN only. It is a bulk delete with no undo behind it.
+		if (pathname === '/api/maintenance/orphan-documents' && method === 'POST') {
+			(async () => {
+				try {
+					const userId = requireAuthUserId();
+					if (!userId) return;
+					const body = await readJsonBody(req);
+					const requestedWorkspaceId = String(body?.workspaceId ?? '').trim() || getSessionWorkspaceId();
+					if (!requestedWorkspaceId) {
+						jsonResponse(res, 400, { error: 'No workspace specified' });
+						return;
+					}
+					const member = await findLiveWorkspaceMembership(prisma, userId, requestedWorkspaceId, { role: true });
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					if (member.role !== 'OWNER' && member.role !== 'ADMIN') {
+						jsonResponse(res, 403, { error: 'Only a workspace owner or admin can delete documents' });
+						return;
+					}
+					const requestedIds = Array.isArray(body?.noteIds)
+						? body.noteIds.map((id) => String(id ?? '').trim()).filter(Boolean)
+						: [];
+					if (requestedIds.length === 0) {
+						jsonResponse(res, 400, { error: 'No note ids supplied' });
+						return;
+					}
+
+					// Re-audit and intersect. The client's list is a request, not an authority.
+					const audit = await auditWorkspaceOrphans(requestedWorkspaceId);
+					const deletable = new Map(audit.orphans.map((entry) => [entry.noteId, entry.docId]));
+					const toDelete = [];
+					const refused = [];
+					for (const noteId of requestedIds) {
+						const docId = deletable.get(noteId);
+						if (docId) toDelete.push({ noteId, docId });
+						else refused.push(noteId);
+					}
+
+					let deleted = 0;
+					for (const entry of toDelete) {
+						// Same tombstone as the single-note delete, for the same reason: a room
+						// whose last connection closes gets flushed back to Postgres, which
+						// would re-create the row we just removed.
+						if (typeof onNoteDocumentDeleted === 'function') {
+							try {
+								onNoteDocumentDeleted(entry.docId);
+							} catch {
+								// non-fatal
+							}
+						}
+						try {
+							await prisma.shareAccessToken.deleteMany({
+								where: { entityType: 'NOTE', entityId: entry.docId },
+							});
+							await prisma.document.delete({ where: { docId: entry.docId } });
+							deleted += 1;
+							console.info(`[api] purged orphaned document ${entry.docId}`);
+						} catch (deleteError) {
+							console.warn(`[api] Failed to purge ${entry.docId}:`, deleteError.message);
+							refused.push(entry.noteId);
+						}
+					}
+
+					const cache = adapter && adapter._redis ? adapter._redis : null;
+					if (cache && typeof adapter._redisKey === 'function') {
+						for (const entry of toDelete) {
+							const keys = new Set([
+								adapter._redisKey(entry.docId, requestedWorkspaceId),
+								adapter._redisKey(entry.docId, null),
+								adapter._redisKey(entry.noteId, requestedWorkspaceId),
+								adapter._redisKey(entry.noteId, null),
+							]);
+							for (const key of keys) {
+								try {
+									await cache.del(key);
+								} catch {
+									// best effort
+								}
+							}
+						}
+					}
+
+					jsonResponse(res, 200, { deleted, refused });
+				} catch (error) {
+					console.error('[api] Orphan purge failed:', error.message);
+					jsonResponse(res, 500, { error: 'Failed to delete documents' });
+				}
+			})();
 			return true;
 		}
 

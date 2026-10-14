@@ -13385,6 +13385,7 @@ export function App(): React.JSX.Element {
 			) : null}
 
 			<PreferencesModal
+					activeWorkspaceId={authWorkspaceId}
 				isOpen={isPreferencesOpen}
 				onClose={() => {
 					if (goBackIfOverlayHistory()) return;

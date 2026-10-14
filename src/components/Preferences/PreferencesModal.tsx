@@ -3,6 +3,11 @@ import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devClearInbox } from '../../core/noteManagementApi';
 import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
+import {
+	auditOrphanDocuments,
+	purgeOrphanDocuments,
+	type OrphanAudit,
+} from '../../core/orphanDocumentApi';
 import { NOTE_GRID_LAYOUT_CACHE_KEY_PREFIX } from '../../core/noteGridLayoutCache';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { clearAllPendingSelfMentions } from '../../core/pendingSelfMentions';
@@ -50,6 +55,16 @@ export type PreferencesModalProps = {
 	/** Direct close — bypasses history.back() so the X feels like an instant dismiss. */
 	onCloseDirect?: () => void;
 	t: (key: string) => string;
+	/**
+	 * The workspace the USER is looking at, for the maintenance tools.
+	 *
+	 * Passed explicitly rather than letting the server fall back to the session's workspace,
+	 * because those two legitimately differ — an offline workspace switch that has not synced
+	 * yet leaves the JWT pointing elsewhere, and the first version of the note-digest endpoint
+	 * returned a different workspace's notes for exactly that reason. A cleanup tool scanning
+	 * the wrong workspace would be worse than useless.
+	 */
+	activeWorkspaceId?: string | null;
 	isLightTheme?: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
@@ -99,6 +114,17 @@ export type PreferencesModalProps = {
 type SectionModalProps = {
 	section: PreferencesSection;
 	authUserId?: string | null;
+	/**
+	 * The workspace the USER is looking at, for the maintenance tools.
+	 *
+	 * Passed explicitly rather than letting the server use the session's workspace,
+	 * because those two legitimately differ - an offline workspace switch that has not
+	 * synced yet leaves the JWT pointing somewhere else, and the first version of the
+	 * note-digest endpoint returned a different workspace's notes for exactly that
+	 * reason. A cleanup tool scanning the wrong workspace would be worse than useless.
+	 */
+	activeWorkspaceId?: string | null;
+
 	/** Gates the About panel's instance telemetry. See AboutSectionContent. */
 	isGlobalAdmin?: boolean;
 	onClose: () => void;
@@ -174,6 +200,16 @@ function formatUptime(seconds: number): string {
 
 function AboutSectionContent(props: {
 	t: (key: string) => string;
+	/**
+	 * The workspace the USER is looking at, for the maintenance tools.
+	 *
+	 * Passed explicitly rather than letting the server use the session's workspace,
+	 * because those two legitimately differ - an offline workspace switch that has not
+	 * synced yet leaves the JWT pointing somewhere else, and the first version of the
+	 * note-digest endpoint returned a different workspace's notes for exactly that
+	 * reason. A cleanup tool scanning the wrong workspace would be worse than useless.
+	 */
+	activeWorkspaceId?: string | null;
 	isLightTheme: boolean;
 	connectionState: ConnectionState;
 	deviceId: string;
@@ -194,6 +230,74 @@ function AboutSectionContent(props: {
 	const [devToolsUnlocked, setDevToolsUnlocked] = React.useState(false);
 	const [devToolsRunning, setDevToolsRunning] = React.useState(false);
 	const [devToolsResult, setDevToolsResult] = React.useState<string | null>(null);
+	// ── Orphaned-document cleanup ─────────────────────────────────────────
+	//
+	// Two stages on purpose: scan and show, then require a second, separate confirmation
+	// before anything is deleted. There is no trash behind this, so the list is shown with
+	// dates, sizes and previews so a note worth keeping can be recognised before it goes.
+	const [orphanAudit, setOrphanAudit] = React.useState<OrphanAudit | null>(null);
+	const [orphanScanning, setOrphanScanning] = React.useState(false);
+	const [orphanDeleting, setOrphanDeleting] = React.useState(false);
+	const [orphanConfirmArmed, setOrphanConfirmArmed] = React.useState(false);
+
+	const handleScanOrphans = React.useCallback(() => {
+		const workspaceId = String(props.activeWorkspaceId || '').trim();
+		if (!workspaceId) {
+			setDevToolsResult('No active workspace to scan.');
+			return;
+		}
+		setOrphanScanning(true);
+		setOrphanConfirmArmed(false);
+		setDevToolsResult(null);
+		void (async () => {
+			try {
+				const audit = await auditOrphanDocuments(workspaceId);
+				setOrphanAudit(audit);
+				setDevToolsResult(
+					audit.orphans.length === 0
+						? 'No unreachable notes — the database matches the note list.'
+						: `${audit.orphans.length} unreachable note${audit.orphans.length === 1 ? '' : 's'} found. Review the list below before deleting.`
+				);
+			} catch (error) {
+				setOrphanAudit(null);
+				setDevToolsResult(`Scan failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+			} finally {
+				setOrphanScanning(false);
+			}
+		})();
+	}, [props.activeWorkspaceId]);
+
+	const handleDeleteOrphans = React.useCallback(() => {
+		const workspaceId = String(props.activeWorkspaceId || '').trim();
+		if (!workspaceId || !orphanAudit || orphanAudit.orphans.length === 0) return;
+		// First press arms, second press deletes. Deliberately not a native confirm() — this
+		// is a destructive bulk action and the list it applies to is on screen behind it.
+		if (!orphanConfirmArmed) {
+			setOrphanConfirmArmed(true);
+			setDevToolsResult('Press again to permanently delete the notes listed below. This cannot be undone.');
+			return;
+		}
+		setOrphanDeleting(true);
+		void (async () => {
+			try {
+				// Exactly the ids on screen. The server re-checks each one and refuses any that
+				// is live, so nothing that became reachable since the scan can be caught up.
+				const result = await purgeOrphanDocuments(workspaceId, orphanAudit.orphans.map((entry) => entry.noteId));
+				const refusedNote = result.refused.length > 0
+					? ` ${result.refused.length} were skipped because they are no longer unreachable.`
+					: '';
+				setDevToolsResult(`Deleted ${result.deleted} unreachable note${result.deleted === 1 ? '' : 's'}.${refusedNote}`);
+				const refreshed = await auditOrphanDocuments(workspaceId).catch(() => null);
+				setOrphanAudit(refreshed);
+			} catch (error) {
+				setDevToolsResult(`Delete failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+			} finally {
+				setOrphanDeleting(false);
+				setOrphanConfirmArmed(false);
+			}
+		})();
+	}, [orphanAudit, orphanConfirmArmed, props.activeWorkspaceId]);
+
 	const [swDebugEnabled, setSwDebugEnabled] = React.useState(() => getPwaDebugEnabled());
 	const iconTapTimerRef = React.useRef<number>(0);
 
@@ -522,8 +626,72 @@ function AboutSectionContent(props: {
 						>
 							{props.t('prefs.devToolsClearSwLog')}
 						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={orphanScanning || orphanDeleting}
+							onClick={handleScanOrphans}
+						>
+							{props.t('prefs.devToolsScanOrphans')}
+						</button>
 						{devToolsRunning ? <p style={{ margin: '4px 0 0', fontSize: '13px', opacity: 0.75 }}>{props.t('prefs.devToolsRunning')}</p> : null}
 					</div>
+					{orphanAudit ? (
+						<div style={{ marginTop: '12px', fontSize: '13px' }}>
+							<p style={{ margin: '0 0 6px' }}>
+								<strong>{props.t('prefs.devToolsOrphanHeading')}</strong>
+							</p>
+							<ul style={{ margin: '0 0 8px', paddingLeft: '18px', opacity: 0.8, lineHeight: 1.5 }}>
+								<li>{`${props.t('prefs.devToolsOrphanInNoteList')}: ${orphanAudit.registryNoteCount ?? '?'}`}</li>
+								<li>{`${props.t('prefs.devToolsOrphanInDatabase')}: ${orphanAudit.documentNoteRows}`}</li>
+								<li>{`${props.t('prefs.devToolsOrphanAttachedDrawings')}: ${orphanAudit.attachedDrawings}`}</li>
+								<li>{`${props.t('prefs.devToolsOrphanTooRecent')}: ${orphanAudit.skippedTooRecent}`}</li>
+								<li><strong>{`${props.t('prefs.devToolsOrphanUnreachable')}: ${orphanAudit.orphans.length}`}</strong></li>
+							</ul>
+							{orphanAudit.orphans.length > 0 ? (
+								<>
+									<div
+										style={{
+											maxHeight: '240px',
+											overflowY: 'auto',
+											overscrollBehavior: 'contain',
+											border: '1px solid var(--color-border, rgba(127,127,127,0.3))',
+											borderRadius: '6px',
+											padding: '8px',
+											marginBottom: '8px',
+										}}
+									>
+										{orphanAudit.orphans.map((entry) => (
+											<div key={entry.docId} style={{ padding: '6px 0', borderBottom: '1px solid rgba(127,127,127,0.15)' }}>
+												<div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'baseline' }}>
+													<span style={{ fontWeight: 600 }}>
+														{entry.title.trim().length > 0 ? entry.title : props.t('prefs.devToolsOrphanUntitled')}
+													</span>
+													<span style={{ opacity: 0.6, fontSize: '12px' }}>
+														{`${entry.type} · ${entry.createdAt.slice(0, 10)} · ${Math.max(1, Math.round(entry.bytes / 1024))} KB`}
+														{entry.trashed ? ` · ${props.t('prefs.devToolsOrphanWasTrashed')}` : ''}
+														{!entry.hasContent ? ` · ${props.t('prefs.devToolsOrphanEmpty')}` : ''}
+													</span>
+												</div>
+												{entry.preview.trim().length > 0 ? (
+													<div style={{ opacity: 0.65, fontSize: '12px', marginTop: '2px' }}>{entry.preview}</div>
+												) : null}
+											</div>
+										))}
+									</div>
+									<button
+										type="button"
+										className={styles.footerButton}
+										disabled={orphanDeleting || orphanScanning}
+										onClick={handleDeleteOrphans}
+										style={orphanConfirmArmed ? { borderColor: 'var(--color-danger, #d9534f)', color: 'var(--color-danger, #d9534f)' } : undefined}
+									>
+										{props.t(orphanConfirmArmed ? 'prefs.devToolsOrphanConfirmDelete' : 'prefs.devToolsOrphanDelete')}
+									</button>
+								</>
+							) : null}
+						</div>
+					) : null}
 					{devToolsResult ? <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.75 }}>{devToolsResult}</p> : null}
 				</div>
 			) : null}
@@ -777,6 +945,7 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 					) : props.section === 'about' ? (
 						<AboutSectionContent
 							t={props.t}
+							activeWorkspaceId={props.activeWorkspaceId}
 							isLightTheme={props.isLightTheme}
 							connectionState={props.connectionState}
 							deviceId={props.deviceId}
@@ -904,6 +1073,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 				<SectionModal
 					section={activeSection}
 					authUserId={props.authUserId}
+					activeWorkspaceId={props.activeWorkspaceId}
 					isGlobalAdmin={props.isGlobalAdmin === true}
 					onClose={() => setActiveSection(null)}
 					onCloseAll={props.onCloseDirect ?? props.onClose}
