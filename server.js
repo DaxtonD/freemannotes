@@ -506,6 +506,9 @@ if (DATABASE_URL.length > 0) {
 					prisma,
 					adapter: persistAdapter,
 					timezone: PGTIMEZONE || null,
+					// Lets a permanent delete stop the room being flushed back. Same
+					// dependency-injection shape as onWorkspaceMetadataChanged below.
+					onNoteDocumentDeleted: markNoteDocumentDeleted,
 					onWorkspaceMetadataChanged: async (event) => {
 						const normalized = normalizeWorkspaceMetadataEvent({
 							...event,
@@ -793,6 +796,45 @@ if (DATABASE_URL.length > 0) {
 // persistence (YPERSISTENCE env var) when both are configured — PostgreSQL
 // takes precedence.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Deleted-document tombstones ──────────────────────────────────────────
+//
+// Deleting a note's row is not enough on its own, because the server writes a room back to
+// Postgres when its last connection closes (see closeRoleAwareConn and the room-loading path,
+// both via getPersistence().writeState). Permanently deleting a note therefore races that
+// write: destroy the local doc, the socket closes, the server flushes the room, and the DELETE
+// that follows may land either side of it.
+//
+// Measured, not theorised: an attached drawing was deleted and its row reappeared with a fresh
+// `createdAt` while its note id dated from hours earlier. Two of the three delete paths happened
+// to win the race; this one lost. A fix that depends on winning a race is not a fix.
+//
+// So a delete leaves a short-lived tombstone and the write path refuses to resurrect it. The TTL
+// only has to outlive an in-flight flush, hence a minute rather than anything persistent.
+//
+// Known limit, deliberately not solved here: if ANOTHER device still holds the room open, its
+// own disconnect flush after the tombstone expires can bring the note back. Deleting a note
+// somebody else has open is a broader design question than this fix.
+const DELETED_DOC_TOMBSTONE_MS = 60_000;
+/** @type {Map<string, number>} docName -> expiry timestamp */
+const recentlyDeletedDocs = new Map();
+
+function markNoteDocumentDeleted(docName) {
+	const name = String(docName || '').trim();
+	if (!name) return;
+	recentlyDeletedDocs.set(name, Date.now() + DELETED_DOC_TOMBSTONE_MS);
+}
+
+function isRecentlyDeletedDoc(docName) {
+	const expiry = recentlyDeletedDocs.get(docName);
+	if (expiry === undefined) return false;
+	if (expiry <= Date.now()) {
+		recentlyDeletedDocs.delete(docName);
+		return false;
+	}
+	return true;
+}
+
+
 if (persistAdapter) {
 	// y-websocket's utils.js exposes `setPersistence(persistence)` which
 	// accepts an object with { bindState, writeState } methods. This is the
@@ -807,7 +849,15 @@ if (persistAdapter) {
 				yDoc.__fnLoaded = Promise.resolve(loaded).catch(() => undefined);
 				return loaded;
 			},
-			writeState: (docName, yDoc) => persistAdapter.writeState(docName, yDoc),
+			writeState: (docName, yDoc) => {
+				// The exact line the resurrection happened on. Both callers of writeState go
+				// through this object (getPersistence()), so guarding here covers them both.
+				if (isRecentlyDeletedDoc(docName)) {
+					console.info(`[server] refused to re-persist deleted doc ${docName}`);
+					return Promise.resolve();
+				}
+				return persistAdapter.writeState(docName, yDoc);
+			},
 		});
 		console.info('[server] y-websocket persistence bound to PostgreSQL adapter');
 	} catch (err) {

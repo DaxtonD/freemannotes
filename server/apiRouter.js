@@ -222,7 +222,7 @@ function getExcalidrawLibraryDefinitions() {
  * @returns {(req: import('http').IncomingMessage, res: import('http').ServerResponse) => boolean}
  *   Returns true if the request was handled, false if it should fall through.
  */
-function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadataChanged = null }) {
+function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadataChanged = null, onNoteDocumentDeleted = null }) {
 	// ── Timezone-aware formatter ─────────────────────────────────────────
 	// All timestamps in API responses go through this formatter so that
 	// Prisma Date objects (from timestamptz columns) and Yjs epoch-ms
@@ -328,6 +328,179 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		} catch {
 			return fallback;
 		}
+	}
+
+	// ─── Note digest projection ──────────────────────────────────────────
+	//
+	// Turns a persisted Yjs blob into the small shape a note CARD needs, so a device that has
+	// never seen a note can draw it at the right size instead of rendering a blank box that
+	// resizes a second later.
+	//
+	// Projected ON DEMAND rather than maintained in a table, and that is a deliberate
+	// simplification of the original plan. A table would have meant a Prisma migration (the
+	// least reversible thing available) plus write-time projection hooks inside
+	// YjsPersistenceAdapter, which CLAUDE.md flags for data loss and cross-workspace leakage.
+	// Decoding on request needs neither: it is additive, it reads nothing it does not already
+	// have access to, and it can be deleted without a trace if it turns out to be wrong.
+	//
+	// The cost is CPU per request. With a cursor that cost is only ever paid for documents that
+	// have actually changed, so steady state is a handful of decodes. A cold start on a large
+	// workspace pages through. If measurement later shows the decode cost matters, THEN add a
+	// projection table — but measure first, because the obvious optimisation here buys a
+	// migration and a hook in the most dangerous file in the server.
+	const DIGEST_CONTENT_PREVIEW_CHARS = 600;
+	const DIGEST_MAX_CHECKLIST_ITEMS = 40;
+	const DIGEST_CHECKLIST_TEXT_CHARS = 240;
+
+	function digestTextFromRichFragment(doc) {
+		try {
+			const fragment = doc.getXmlFragment('contentRich');
+			if (!fragment || fragment.length === 0) return '';
+			// toString() yields XML; strip tags for a length/shape hint. This is for SIZING a
+			// card, not for displaying, so losing the markup is fine.
+			return String(fragment.toString())
+				.replace(/<[^>]*>/g, ' ')
+				.replace(/\s+/g, ' ')
+				.trim();
+		} catch {
+			return '';
+		}
+	}
+
+	function projectNoteDigestFromState(state, noteId, serverUpdatedAt) {
+		if (!state || state.length === 0) return null;
+		const doc = new Y.Doc();
+		try {
+			Y.applyUpdate(doc, new Uint8Array(state));
+			const metadata = doc.getMap('metadata');
+			const rawType = String(metadata.get('type') ?? 'text');
+			const type = rawType === 'checklist' ? 'checklist' : rawType === 'drawing' ? 'drawing' : 'text';
+
+			const plainContent = doc.getText('content').toString();
+			const richContent = plainContent.length > 0 ? '' : digestTextFromRichFragment(doc);
+			const contentSource = plainContent.length > 0 ? plainContent : richContent;
+
+			const checklist = doc.getArray('checklist');
+			const checklistItems = [];
+			let completedCount = 0;
+			for (let index = 0; index < checklist.length; index++) {
+				const item = checklist.get(index);
+				const done = item && typeof item.get === 'function' ? item.get('done') === true : false;
+				if (done) completedCount += 1;
+				if (checklistItems.length >= DIGEST_MAX_CHECKLIST_ITEMS) continue;
+				const text = item && typeof item.get === 'function' ? String(item.get('text') ?? '') : '';
+				checklistItems.push({ text: text.slice(0, DIGEST_CHECKLIST_TEXT_CHARS), done });
+			}
+
+			const labelIdsRaw = metadata.get('labelIds');
+			// drawingIds is a TOP-LEVEL Y.Array, not a metadata field. Reading it off the
+			// metadata map returned [] for every note, which is how this was caught: an
+			// audit reported "0 attached drawings" for a user who plainly has many, and an
+			// implausible zero means the method is wrong, not the data. See
+			// readDrawingLinkState in noteModel.ts for the canonical read.
+			let drawingIds = [];
+			try {
+				drawingIds = doc.getArray('drawingIds').toArray().filter((id) => typeof id === 'string');
+			} catch {
+				drawingIds = [];
+			}
+
+			return {
+				id: noteId,
+				type,
+				title: doc.getText('title').toString(),
+				// A hint for height estimation, not the note. Truncated on purpose.
+				contentPreview: contentSource.slice(0, DIGEST_CONTENT_PREVIEW_CHARS),
+				contentLength: contentSource.length,
+				checklistItems,
+				checklistItemCount: checklist.length,
+				checklistCompletedCount: completedCount,
+				createdAt: Number(metadata.get('createdAt') ?? 0) || 0,
+				updatedAt: Number(metadata.get('updatedAt') ?? 0) || 0,
+				collectionId: typeof metadata.get('collectionId') === 'string' ? metadata.get('collectionId') : null,
+				labelIds: Array.isArray(labelIdsRaw) ? labelIdsRaw.filter((id) => typeof id === 'string') : [],
+				drawingIds,
+				bannerFile: typeof metadata.get('bannerFile') === 'string' ? metadata.get('bannerFile') : null,
+				trashed: metadata.get('trashed') === true,
+				archived: metadata.get('archived') === true,
+				// The cursor field. Document.updatedAt is @updatedAt, so Postgres already
+				// maintains exactly the "changed since" ordering this needs — no new column.
+				serverUpdatedAt: serverUpdatedAt instanceof Date ? serverUpdatedAt.toISOString() : null,
+			};
+		} catch {
+			return null;
+		} finally {
+			doc.destroy();
+		}
+	}
+
+	// Which note ids the workspace's registry actually claims.
+	//
+	// The grid renders from the registry's noteOrder, NOT from the document table, so the two
+	// can disagree — and the first real digest response suggested they do: it returned notes
+	// the user cannot find in the grid, the trash, or any workspace, plus several rows with no
+	// title, no content and createdAt/updatedAt of 0.
+	//
+	// Needed by the digest regardless of that: a digest built straight from the document table
+	// would hand the client orphans and empty stubs to render as cards.
+	async function readWorkspaceRegistryNoteIds(workspaceId) {
+		try {
+			const row = await prisma.document.findUnique({
+				where: { docId: makeRoomDocId(workspaceId, '__notes_registry__') },
+				select: { state: true },
+			});
+			if (!row || !row.state || row.state.length === 0) return null;
+			const doc = new Y.Doc();
+			try {
+				Y.applyUpdate(doc, new Uint8Array(row.state));
+				const ids = new Set();
+				const noteOrder = doc.getArray('noteOrder');
+				for (let index = 0; index < noteOrder.length; index++) {
+					const value = String(noteOrder.get(index) ?? '').trim();
+					if (value) ids.add(value);
+				}
+				const notesList = doc.getArray('notesList');
+				const listIds = new Set();
+				for (let index = 0; index < notesList.length; index++) {
+					const item = notesList.get(index);
+					const value = item && typeof item.get === 'function' ? String(item.get('id') ?? '').trim() : '';
+					if (value) listIds.add(value);
+				}
+				return { orderIds: ids, listIds };
+			} finally {
+				doc.destroy();
+			}
+		} catch {
+			return null;
+		}
+	}
+
+	function isDigestEligibleDocId(rawDocId) {
+		const id = String(rawDocId || '');
+		if (!id) return false;
+		if (id.startsWith('markup:')) return false;
+		return !id.includes('__notes_registry__')
+			&& !id.includes('__collections_registry__')
+			&& !id.includes('__labels_registry__');
+	}
+
+	// Cursor is (serverUpdatedAt, docId) and both halves are load-bearing: several documents can
+	// share a millisecond, and a cursor on the timestamp alone would skip every row that tied
+	// with the last one returned. Silently missing notes is exactly the failure this must not
+	// have, so the comparison is the standard keyset pair.
+	function parseDigestCursor(raw) {
+		const value = String(raw || '').trim();
+		if (!value) return null;
+		const separator = value.indexOf('|');
+		if (separator <= 0) return null;
+		const at = new Date(value.slice(0, separator));
+		if (Number.isNaN(at.getTime())) return null;
+		return { at, docId: value.slice(separator + 1) };
+	}
+
+	function formatDigestCursor(serverUpdatedAt, storedDocId) {
+		if (!(serverUpdatedAt instanceof Date)) return null;
+		return `${serverUpdatedAt.toISOString()}|${storedDocId}`;
 	}
 
 	function makeRoomDocId(workspaceId, rawDocId) {
@@ -1005,6 +1178,113 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		// Card shells for the active workspace, so a device that has never seen these notes can
+		// render them at the right size. A RENDER HINT ONLY — the moment a real Yjs document
+		// loads it wins, unconditionally, which keeps the CRDT authoritative and makes any
+		// drift cosmetic rather than a correctness problem.
+		//
+		// Takes an explicit `workspaceId`, and membership is verified against THAT id.
+		//
+		// The first version refused a workspace parameter and used requireWorkspaceMember(),
+		// on the reasoning that re-implementing membership checks is how cross-workspace leaks
+		// happen. Sound reasoning, wrong target: that helper resolves the workspace from
+		// getSessionWorkspaceId() - the one baked into the JWT cookie - and the client's active
+		// workspace legitimately differs from it. That is the exact case probeSession handles
+		// ("local selection differs from the server's active workspace, e.g. an offline switch
+		// that has not synced"), and it occurs on roughly half of cold boots. Measured: asking
+		// for the digest returned a different workspace's single note instead of the 34 the
+		// user was looking at.
+		//
+		// Verifying membership of the REQUESTED workspace is just as safe - the check is still
+		// made, against exactly what is being read - and it is the only version that answers
+		// the question the client is actually asking. Falls back to the session workspace when
+		// the parameter is absent, which keeps it usable by hand in a browser.
+		if (pathname === '/api/note-digest' && method === 'GET') {
+			(async () => {
+				try {
+					const userId = requireAuthUserId();
+					if (!userId) return;
+					const requestedWorkspaceId = String(url.searchParams.get('workspaceId') ?? '').trim()
+						|| getSessionWorkspaceId();
+					if (!requestedWorkspaceId) {
+						jsonResponse(res, 400, { error: 'No workspace specified' });
+						return;
+					}
+					const member = await findLiveWorkspaceMembership(prisma, userId, requestedWorkspaceId, { role: true });
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					const workspaceId = requestedWorkspaceId;
+					const requestedLimit = Number.parseInt(String(url.searchParams.get('limit') ?? ''), 10);
+					const limit = Number.isFinite(requestedLimit)
+						? Math.min(500, Math.max(1, requestedLimit))
+						: 200;
+					const cursor = parseDigestCursor(url.searchParams.get('since'));
+
+					const where = { workspaceId };
+					if (cursor) {
+						where.OR = [
+							{ updatedAt: { gt: cursor.at } },
+							{ AND: [{ updatedAt: cursor.at }, { docId: { gt: cursor.docId } }] },
+						];
+					}
+
+					const registry = await readWorkspaceRegistryNoteIds(workspaceId);
+
+					const rows = await prisma.document.findMany({
+						where,
+						// Matches the keyset cursor above. Must stay in step with it.
+						orderBy: [{ updatedAt: 'asc' }, { docId: 'asc' }],
+						take: limit + 1,
+						select: { docId: true, state: true, updatedAt: true },
+					});
+
+					const hasMore = rows.length > limit;
+					const page = hasMore ? rows.slice(0, limit) : rows;
+					const notes = [];
+					for (const row of page) {
+						const rawDocId = stripDocNamespace(workspaceId, row.docId);
+						if (!isDigestEligibleDocId(row.docId)) continue;
+						const projected = projectNoteDigestFromState(row.state, rawDocId, row.updatedAt);
+						if (!projected) continue;
+						// Reported, not filtered, while this is still a diagnostic. The client
+						// integration will want to drop anything the registry does not claim,
+						// but first we need to see how much of that there is and why.
+						projected.inNoteOrder = registry ? registry.orderIds.has(rawDocId) : null;
+						projected.inNotesList = registry ? registry.listIds.has(rawDocId) : null;
+						notes.push(projected);
+					}
+
+					// The cursor advances past every row INSPECTED, not every note returned —
+					// registries and markup rooms are filtered out, and a cursor that only
+					// tracked returned notes would re-read them on every call forever.
+					const last = page.length > 0 ? page[page.length - 1] : null;
+					jsonResponse(res, 200, {
+						notes,
+						cursor: last ? formatDigestCursor(last.updatedAt, last.docId) : (url.searchParams.get('since') ?? null),
+						hasMore,
+						// Echoed so a cursor that silently failed to parse cannot be mistaken for
+						// one that parsed and matched nothing. The first manual test returned an
+						// identical page for a request WITH a cursor, and those two explanations
+						// are indistinguishable from the outside.
+						diagnostics: {
+							receivedSince: url.searchParams.get('since') ?? null,
+							appliedCursor: cursor
+								? { at: cursor.at.toISOString(), docId: cursor.docId }
+								: null,
+							registryNoteOrderCount: registry ? registry.orderIds.size : null,
+							registryNotesListCount: registry ? registry.listIds.size : null,
+							documentRowsInspected: page.length,
+						},
+					});
+				} catch (error) {
+					jsonResponse(res, 500, { error: 'Failed to build note digest' });
+				}
+			})();
+			return true;
+		}
+
 		if (pathname === '/api/excalidraw-libraries' && method === 'GET') {
 			(async () => {
 				try {
@@ -1349,6 +1629,123 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				} catch (err) {
 					console.error(`[api] GET /api/docs/${docId} error:`, err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// Permanently delete a note's persisted document.
+		//
+		// This exists because there was no way to do it, and that was a real leak. The client's
+		// `permanentlyDeleteNote` removed the note from the registry and destroyed the LOCAL
+		// Yjs doc, and nothing ever told the server. Measured on a dev database: 135 of 311
+		// document rows belonged to no registry at all - 72 of them with real content, the rest
+		// drafts that were opened, persisted, and cancelled. A note you permanently deleted was
+		// still on the server, and `/api/search` (which queries the document table directly)
+		// would still find it while the grid - which renders from the registry - could not.
+		//
+		// Note the asymmetry this closes: the SCHEDULED trash cleanup
+		// (server/trashCleanup.js) always deleted the row correctly. Only the client-initiated
+		// paths - emptying the trash by hand, deleting a note outright, discarding a draft -
+		// leaked, because they had no server call to make.
+		const deleteNoteDocMatch = pathname.match(/^\/api\/notes\/([^/]+)\/document$/);
+		if (deleteNoteDocMatch && method === 'DELETE') {
+			(async () => {
+				try {
+					const access = await requireWorkspaceMember();
+					if (!access) return;
+					const { workspaceId, member } = access;
+					if (member.role === 'VIEWER') {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					const rawNoteId = decodeURIComponent(deleteNoteDocMatch[1] || '').trim();
+					if (!rawNoteId) {
+						jsonResponse(res, 400, { error: 'Missing note id' });
+						return;
+					}
+					// Registry rooms are not notes and must never be deletable through here.
+					if (!isDigestEligibleDocId(rawNoteId)) {
+						jsonResponse(res, 400, { error: 'Not a note document' });
+						return;
+					}
+					const storedDocId = namespacedDocId(workspaceId, rawNoteId);
+					const row = await prisma.document.findUnique({
+						where: { docId: storedDocId },
+						select: { id: true, workspaceId: true },
+					});
+					if (!row) {
+						// Idempotent: the client may retry a queued delete after the row is
+						// already gone, and that is a success, not an error.
+						console.info(`[api] note document already absent ${storedDocId}`);
+						jsonResponse(res, 200, { deleted: false, alreadyAbsent: true });
+						return;
+					}
+					// Belt and braces. The docId is namespaced with the workspace, so this
+					// should be unreachable - but this endpoint deletes data, and a mismatch
+					// here would mean deleting another workspace's note.
+					if (row.workspaceId !== workspaceId) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					// Tombstone FIRST. The server flushes a room back to Postgres when its
+					// last connection closes, so a delete races that write — and losing the
+					// race re-creates the row. Marking before the delete means a flush landing
+					// at any point from here on is refused.
+					if (typeof onNoteDocumentDeleted === 'function') {
+						try {
+							onNoteDocumentDeleted(storedDocId);
+						} catch (tombstoneError) {
+							console.warn('[api] Failed to record delete tombstone:', tombstoneError.message);
+						}
+					}
+
+					// shareAccessToken references notes polymorphically via entityId rather
+					// than a foreign key, so it does not cascade and has to go explicitly.
+					// Everything else that points at Document does cascade (see schema).
+					await prisma.shareAccessToken.deleteMany({
+						where: { entityType: 'NOTE', entityId: storedDocId },
+					});
+					await prisma.document.delete({ where: { id: row.id } });
+
+					// Invalidate the Redis cache or the document comes straight back: the
+					// adapter reads from cache before Postgres, with a 24h TTL. The key is
+					// built as `fn:yjs:<workspaceId || workspaceName>:<docName>`, and both
+					// forms are cleared because which one was written depends on how the
+					// adapter was constructed. DEL on a missing key is a no-op.
+					// createApiRouter does not receive a redis client, but the adapter owns one
+					// along with the canonical key builder. Reaching in like this is the
+					// pattern server/trashCleanup.js already uses, and it is better than
+					// re-deriving the key format here and getting it subtly wrong.
+					const cache = adapter && adapter._redis ? adapter._redis : null;
+					if (cache && typeof adapter._redisKey === 'function') {
+						// Both namespaces: the key is `fn:yjs:<workspaceId || workspaceName>:<doc>`
+						// and which one was written depends on how the adapter was constructed.
+						// DEL on a missing key is a no-op.
+						const keys = new Set([
+							adapter._redisKey(storedDocId, workspaceId),
+							adapter._redisKey(storedDocId, null),
+							adapter._redisKey(rawNoteId, workspaceId),
+							adapter._redisKey(rawNoteId, null),
+						]);
+						for (const key of keys) {
+							try {
+								await cache.del(key);
+							} catch (cacheError) {
+								console.warn(`[api] Redis invalidation failed for ${key}:`, cacheError.message);
+							}
+						}
+					}
+
+					// Logged unconditionally. A count measured afterwards can only say whether a
+					// row survived, not whether the client ever asked - and those need
+					// different fixes (stale bundle / failed call vs. a server-side problem).
+					console.info(`[api] deleted note document ${storedDocId}`);
+					jsonResponse(res, 200, { deleted: true });
+				} catch (error) {
+					console.error('[api] Failed to delete note document:', error.message);
+					jsonResponse(res, 500, { error: 'Failed to delete note document' });
 				}
 			})();
 			return true;

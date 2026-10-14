@@ -168,6 +168,11 @@ import {
 	readWorkspacesWithOfflineEdits,
 } from './core/workspaceOfflineEditMarkers';
 import { clearRoomOfflineEditMarkers } from './core/roomOfflineEditMarkers';
+import {
+	clearPendingNoteDocumentDeletes,
+	deleteNoteDocumentOnServer,
+	flushPendingNoteDocumentDeletes,
+} from './core/noteDocumentDeleteQueue';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -3322,6 +3327,9 @@ export function App(): React.JSX.Element {
 		if (!parentDoc) return;
 		removeNoteDrawingId(parentDoc, normalizedDrawingId);
 		await manager.deleteNote(normalizedDrawingId, true);
+		// The server keeps its own copy of every room it has ever persisted, and deleting the
+		// note locally never told it. See noteDocumentDeleteQueue for the measurement.
+		await deleteNoteDocumentOnServer({ userId: authUserId, workspaceId: authWorkspaceId, noteId: normalizedDrawingId });
 	}, [ensureRelatedNoteAlias, manager]);
 
 	const openMobileSidebar = React.useCallback(() => {
@@ -3995,6 +4003,10 @@ export function App(): React.JSX.Element {
 					return;
 				}
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
+				// A draft's room is opened the moment the editor does, so the server has very
+				// likely already persisted it by the time the user cancels. This is the single
+				// largest source of the orphaned rows that were measured.
+				await deleteNoteDocumentOnServer({ userId: authUserId, workspaceId: authWorkspaceId, noteId });
 				if (authWorkspaceId) {
 					const discardedDocId = `${authWorkspaceId}:${noteId}`;
 					releaseCollaboratorInvitesForDoc(discardedDocId);
@@ -5631,6 +5643,7 @@ export function App(): React.JSX.Element {
 		resetAttachedDrawingAccessRecovery();
 		clearWorkspaceOfflineEditMarkers();
 		clearRoomOfflineEditMarkers();
+		clearPendingNoteDocumentDeletes();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();
@@ -10345,6 +10358,12 @@ export function App(): React.JSX.Element {
 		try {
 			const result = await emptyTrashNow();
 			await Promise.all(result.noteIds.map((noteId) => manager.permanentlyDeleteNote(noteId).catch(() => undefined)));
+			// Emptying the trash by hand went through the client only. The SCHEDULED cleanup in
+			// server/trashCleanup.js always deleted the row properly, so this path was the
+			// asymmetry that left deleted notes sitting on the server, findable by search.
+			await Promise.all(result.noteIds.map((noteId) =>
+				deleteNoteDocumentOnServer({ userId: authUserId, workspaceId: authWorkspaceId, noteId })
+			));
 			setSelectedNoteId((current) => current && result.noteIds.includes(current) ? null : current);
 			setOpenDocId((current) => {
 				if (!current || !result.noteIds.includes(current)) return current;
@@ -10608,6 +10627,9 @@ export function App(): React.JSX.Element {
 		void scheduleQueuedNoteImageFlush(authUserId);
 		void scheduleQueuedNoteDocumentFlush(authUserId);
 		void flushQueuedNoteLinkSync(authUserId);
+		// Deletes that could not reach the server. Idempotent, so replaying costs nothing when
+		// the queue is empty, which is almost always.
+		void flushPendingNoteDocumentDeletes(authUserId);
 		let retryTimer: ReturnType<typeof setTimeout> | null = null;
 		const MAX_RECONNECT_FLUSH_ATTEMPTS = 8;
 		const INITIAL_NOTE_LINK_RECONNECT_DELAY_MS = 2100;
@@ -10620,6 +10642,7 @@ export function App(): React.JSX.Element {
 					await new Promise((r) => setTimeout(r, attempt === 0 ? INITIAL_NOTE_LINK_RECONNECT_DELAY_MS : 2000));
 					void scheduleQueuedNoteImageFlush(authUserId);
 					void scheduleQueuedNoteDocumentFlush(authUserId);
+					void flushPendingNoteDocumentDeletes(authUserId);
 					await flushQueuedNoteLinkSync(authUserId);
 					void refreshNoteShareState();
 					// After each attempt, re-scan placeholders in cache so hydrated rows
