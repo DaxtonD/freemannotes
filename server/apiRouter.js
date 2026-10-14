@@ -1462,6 +1462,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						? Math.min(500, Math.max(1, requestedLimit))
 						: 200;
 					const cursor = parseDigestCursor(url.searchParams.get('since'));
+					const includeUnclaimed = url.searchParams.get('includeUnclaimed') === '1';
 
 					const where = { workspaceId };
 					if (cursor) {
@@ -1492,8 +1493,22 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						// Reported, not filtered, while this is still a diagnostic. The client
 						// integration will want to drop anything the registry does not claim,
 						// but first we need to see how much of that there is and why.
-						projected.inNoteOrder = registry ? registry.orderIds.has(rawDocId) : null;
+						const inNoteOrder = registry ? registry.orderIds.has(rawDocId) : null;
+						projected.inNoteOrder = inNoteOrder;
 						projected.inNotesList = registry ? registry.listIds.has(rawDocId) : null;
+						// Only notes the registry CLAIMS, unless explicitly asked otherwise.
+						//
+						// This is a correctness requirement, not a tidy-up. The document table is
+						// a superset of what the app considers to exist: attached drawings live in
+						// their own rooms and are referenced by a parent note's drawingIds rather
+						// than by noteOrder, and a note being drafted right now is not registered
+						// yet. Hand the unfiltered table to the grid and it renders a phantom card
+						// for every one of them - which is precisely the class of bug this whole
+						// endpoint was built to help fix, recreated from the other direction.
+						//
+						// `includeUnclaimed=1` keeps the raw view available for diagnostics; the
+						// maintenance endpoints use their own audit and do not rely on it.
+						if (!includeUnclaimed && registry && inNoteOrder !== true) continue;
 						notes.push(projected);
 					}
 
@@ -1517,6 +1532,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 							registryNoteOrderCount: registry ? registry.orderIds.size : null,
 							registryNotesListCount: registry ? registry.listIds.size : null,
 							documentRowsInspected: page.length,
+							includeUnclaimed,
 						},
 					});
 				} catch (error) {

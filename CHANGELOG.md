@@ -2,6 +2,32 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.23.0 - 2026-10-13
+
+### Fixed
+- **Deleting a note now actually deletes it.** This is the big one, and it had been quietly true for months: permanently deleting a note removed it from your note list and wiped the local copy, but never told the server. The note stayed in the database forever.
+
+  You could not see it in the grid. You could not see it in the trash. It was in no workspace. But search still found it, and you could open it and edit it. All three of those are the same fact wearing different hats: the grid and the trash are built from your note list, while search looks straight at the database.
+
+  On this author's own dev database, **135 of 311 stored notes belonged to no note list at all** — 72 of them with real content, including one note of a megabyte, plus 63 blank drafts that were opened and cancelled. Every one of them had been sitting there since July.
+
+  Two separate things were wrong. The obvious one is that nothing asked the server to delete anything, which is now a real request that retries if it cannot get through, rather than a hope. The subtler one is a race: the server saves a note back to the database when the last person viewing it disconnects, so deleting one was a coin flip between "deleted" and "deleted, then immediately saved again". That is why two of the three delete paths looked fine and one did not. A delete now leaves a short-lived note-to-self that stops the save putting it back.
+
+  Worth saying plainly: the *scheduled* trash cleanup was always correct. Only the things you did by hand leaked — emptying the trash, deleting a note, cancelling a new one.
+
+- **A couple of notes that had never synced since 1.21.3 now sync.** Same root cause, found by accident. Attaching a drawing to one of your own notes registered it as living "somewhere else", with "somewhere else" being its own room — a pointless entry that was nonetheless enough for routine housekeeping to treat an ordinary note as rubbish and delete it. Three previous attempts to fix those notes were aimed at the sync code, which was never the problem.
+
+### Added
+- **A cleanup tool for notes the app cannot see**, in Settings → About → Developer Tools. Since the leak above is fixed, this is for clearing the backlog rather than keeping up with an ongoing mess.
+
+  It shows how many notes are in your list against how many are in the database, then lists every unaccounted-for one with its title, type, date, size and a preview, plus tags for *was in trash* and *empty* — enough to recognise something you want before it goes. Deleting takes two presses, and the list it applies to stays on screen behind the confirmation.
+
+  It deliberately leaves four things alone: attached drawings, which correctly do not appear in your note list; anything less than half an hour old, because a note you are drafting right now looks identical to an abandoned one; and the two kinds of internal bookkeeping records that are not notes. The first of those is not a nicety — an earlier version of the scan read the wrong field, confidently reported "0 attached drawings" for an account full of them, and would have offered to delete every drawing in it.
+
+  After running it here: 311 stored notes down to 212, and the numbers now add up exactly — 46 in the note list, 6 attached drawings, 2 too recent to judge, 54 stored.
+
+- **Groundwork for cards that know their own size before their data arrives.** A new read-only endpoint can describe a note — its type, title, how many checklist items, whether it has a banner — without the app needing to have downloaded that note first. This is what should eventually stop blank cards appearing on a device that has never seen your notes, and then resizing once the data lands. Nothing in the app uses it yet.
+
 ## 1.22.0 - 2026-10-12
 
 ### Removed

@@ -1192,6 +1192,126 @@ providers itself, and second-guessing it on a transient reading is what caused t
 Pending timers are keyed **per room**. They were a flat set, so any new pass cancelled every
 pending connect including rooms it was not being asked about.
 
+## Deleting a Note Has to Tell the Server, and Then Stop It Saving It Back
+
+**`DocumentManager.permanentlyDeleteNote()` removed the note from the registry and destroyed the
+LOCAL Yjs doc. That was all it ever did.** Nothing told the server, so the `document` row
+survived — invisible in the grid and the trash (both render from the registry's `noteOrder`) but
+findable by `/api/search`, which queries `prisma.document.findMany()` directly with no registry
+filter. That combination is what a user reported as *"I can't find this note, but search can, and
+I can still edit it."*
+
+Measured on a dev database before the fix: **135 of 311 document rows belonged to no registry** —
+72 with real content (one of them 1 MB), 63 empty drafts.
+
+**The asymmetry that made it confusing:** the scheduled cleanup in `server/trashCleanup.js`
+always deleted the row correctly. Only client-initiated paths leaked — emptying the trash by
+hand, deleting a note, discarding a draft — because they had no server call to make.
+
+### Two halves, and the second one is the interesting one
+
+**Half one:** `DELETE /api/notes/:id/document`. Membership-gated, VIEWERs refused, idempotent (an
+absent row answers 200, so a replayed delete is a success not an error), and it invalidates the
+Redis cache through the **adapter's own key builder** rather than re-deriving the format.
+
+It is **queued**, via `src/core/noteDocumentDeleteQueue.ts`. The old path was
+`permanentlyDeleteNote().catch(() => undefined)` — a swallowed failure with no retry — and adding
+a network call with the same handling would have moved the leak rather than fixed it.
+
+**No `fetch` was added to `DocumentManager`.** It makes no network calls at all, and keeping that
+true is worth more than the convenience of centralising this inside it, so the three call sites
+in `App.tsx` are wired explicitly. There are exactly three; they were enumerated, not assumed.
+
+**Half two — an ordering bug, and the reason two of three paths appeared to work.** `server.js`
+writes a room back to Postgres when its last connection closes (`closeRoleAwareConn` and the
+room-loading path, both via `getPersistence().writeState`). So **every permanent delete raced
+that write.** Two paths happened to win; one lost. Caught by an attached drawing whose row
+reappeared with a fresh `createdAt` while its note id dated from hours earlier.
+
+A delete now records a **60 s tombstone** (`recentlyDeletedDocs` in `server.js`) *before* removing
+the row, and the `writeState` wrapper refuses anything tombstoned. It sits at the exact line the
+resurrection happened on, both callers go through it, and it needs **no changes to
+`YjsPersistenceAdapter`** — the file CLAUDE.md flags for data loss and cross-workspace leakage.
+
+Verified end to end rather than inferred: a test opened the room over WebSocket, wrote content,
+waited for the autosave, deleted over HTTP, then closed the socket to force the flush. The row
+went 1 -> 0 -> 0, **and the log confirmed the flush was attempted and refused** — so it passed for
+the right reason rather than because the flush never happened.
+
+**Known limit, deliberately not solved:** if another device still holds the note open, its own
+disconnect flush after the tombstone expires can bring the note back. Deleting a note somebody
+else is viewing is a broader design question.
+
+### Why the orphans existed
+
+Two causes, both confirmed:
+- New notes are only committed on Save, but the editor opens the Yjs room immediately, so the
+  server persists the draft before the user has decided. **Every cancelled draft leaked a row.**
+- Emptying the trash by hand went through the client path above.
+
+A third, smaller one closed a long-standing mystery: `ensureRelatedNoteAlias` registered a
+**no-op alias** for a drawing on a local note, pointing the id at its own room. That promoted an
+ordinary local room to an alias *target*, so `setExternalRoomAliases` would destroy it. Those
+were the 2-3 "phantom" never-synced rooms in every sync report since 1.21.3; `never synced` went
+to **0** when it was fixed, after three earlier attempts had aimed at the sync code instead.
+
+## The Orphaned-Document Cleanup Tool, and Its Four Exclusions
+
+Settings -> About -> Developer Tools -> "Scan for unreachable notes".
+`GET /api/maintenance/orphan-documents` audits; `POST` to the same path deletes.
+
+**The POST takes the explicit ids the client showed the user**, not a "delete everything stale"
+flag — so consent applies to a list somebody actually read, and anything that went stale between
+the preview and the confirmation is not swept up with it. **Every id is then re-checked against a
+fresh server-side audit**, so a stale or hand-edited list cannot delete a live note: asking it to
+returns `deleted: 0` with that id refused. Verified against both a live note and a real orphan.
+OWNER/ADMIN only, and it reuses the same tombstone as the single-note path.
+
+Four exclusions, each load-bearing rather than defensive:
+
+1. **Attached drawings.** These legitimately do NOT appear in `noteOrder` — they live in their own
+   rooms, referenced by a parent note's **top-level `drawingIds` Y.Array**. An earlier version of
+   the audit read `drawingIds` off the metadata **map**, reported "0 attached drawings" for an
+   account that plainly had several, and would have offered to delete every drawing in it. It was
+   caught only because zero was implausible. **An implausible zero means the method is wrong, not
+   the data.**
+2. **Anything newer than 30 minutes.** A note being drafted right now is not in the registry yet
+   and looks exactly like an orphan.
+3. **Registry rooms** — not notes.
+4. **Markup rooms** (`markup:*`) — they belong to a document version, not a workspace.
+
+**The workspace id is passed explicitly from App**, not left to the server's session fallback.
+Those two legitimately differ — an offline workspace switch that has not synced leaves the JWT
+pointing elsewhere — and it is what made the first note-digest response return a different
+workspace's notes. A cleanup tool scanning the wrong workspace would be worse than useless.
+
+## The Note Digest (`GET /api/note-digest`) — Groundwork, Nothing Reads It Yet
+
+Describes a note's card shape (type, title, content preview, checklist items, counts, banner,
+`drawingIds`, flags, timestamps) by projecting the stored Yjs blob **on demand**. The point is a
+device that has never seen a note being able to draw a correctly-sized card for it.
+
+- **No Prisma migration and no changes to `YjsPersistenceAdapter`.** `Document.updatedAt` is
+  `@updatedAt`, so Postgres already maintains the "changed since" ordering a cursor needs. The
+  original design called for a projection table plus write-time hooks in the adapter; both were
+  dropped as the two most dangerous parts. **If decode CPU ever proves to matter, measure first**
+  — the obvious optimisation buys a migration and a hook in the riskiest file in the server.
+- The cursor is a **keyset pair `(updatedAt, docId)`**, not a bare timestamp. Documents can share
+  a millisecond, and a timestamp-only cursor would skip every row that tied with the last one
+  returned. Silently missing notes is the one failure this must not have.
+- The cursor advances past every row **inspected**, not every note returned, or filtered rows
+  would be re-read on every call forever.
+- **It filters to registry-claimed notes** (`includeUnclaimed=1` keeps the raw view for
+  diagnostics). This is a correctness requirement, not a tidy-up: the document table is a
+  superset of what the app thinks exists, so the unfiltered table would have the grid render a
+  phantom card for every attached drawing and every draft in progress — recreating the bug above
+  from the other direction.
+- It is a **RENDER HINT ONLY**. A real document wins unconditionally the moment it loads, which
+  keeps the CRDT authoritative and makes any drift cosmetic.
+
+**Shared notes are not covered** — their documents live in the owner's workspace, so a
+workspace-scoped digest cannot see them. Accepted for now.
+
 ## Holding a Card's Height Was Tried Twice and Reverted Twice — Read Before Attempt Three
 
 **Shipped in 1.21.9, reverted whole in 1.22.0.** The goal is the user's own, and it is still
