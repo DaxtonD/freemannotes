@@ -173,6 +173,8 @@ import {
 	deleteNoteDocumentOnServer,
 	flushPendingNoteDocumentDeletes,
 } from './core/noteDocumentDeleteQueue';
+import { clearNoteDigestCursors, seedWorkspaceDigest } from './core/noteDigestSeed';
+import { clearAllNoteDigestShells } from './core/noteDigestStore';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -2732,6 +2734,42 @@ export function App(): React.JSX.Element {
 			unsubscribe();
 		};
 	}, [authStatus, authWorkspaceId, manager]);
+
+	// Ask the server what this workspace's notes look like, so a device that has never seen them
+	// can still draw correctly-sized cards.
+	//
+	// Issue 2 of the three that started the delivery rework: "I'll add 5 notes on my desktop, open
+	// the app on my phone later, see 5 blank cards, and then they populate and resize." A card's
+	// shape comes from the render snapshot, which is per-device localStorage - so a new device has
+	// nothing to draw and falls back to estimateUnmeasuredNoteHeightPx, which HASHES THE NOTE ID
+	// for a height. Deterministic noise. The card is blank and the wrong size, twice wrong.
+	//
+	// These shells are a render hint and live in their own store; a live doc and this device's own
+	// measured snapshot both beat them. Failure is silent on purpose - this is an optimisation for
+	// first paint, not something a boot should depend on.
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authWorkspaceId || !deviceId) return;
+		// Offline it would only fail. The cursor is left where it is, so the next online boot
+		// re-reads the same window rather than skipping notes it never saw.
+		if (authOfflineMode) return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		let cancelled = false;
+		void (async () => {
+			const result = await seedWorkspaceDigest({ workspaceId: authWorkspaceId, deviceId });
+			if (cancelled) return;
+			if (result.added > 0 || result.updated > 0) {
+				void logClientEvent('NOTE_DIGEST_SEEDED', {
+					workspaceId: authWorkspaceId,
+					fetched: result.fetched,
+					added: result.added,
+					updated: result.updated,
+				});
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [authOfflineMode, authStatus, authWorkspaceId, deviceId]);
 	const exitBackPressRef = React.useRef({ count: 0, lastAt: 0 });
 	// Guard: prevent queuing multiple history.back() calls from rapid taps.
 	// Reset in the popstate handler once the navigation actually completes.
@@ -5644,6 +5682,10 @@ export function App(): React.JSX.Element {
 		clearWorkspaceOfflineEditMarkers();
 		clearRoomOfflineEditMarkers();
 		clearPendingNoteDocumentDeletes();
+		// Digest shells carry note titles and content previews, so they go with everything else
+		// that would otherwise be sitting there for whoever signs in next on this device.
+		clearAllNoteDigestShells();
+		clearNoteDigestCursors();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();

@@ -91,6 +91,7 @@ import {
 	type WorkspaceRenderSnapshotNote,
 	writeWorkspaceRenderSnapshot,
 } from '../../core/workspaceRenderSnapshot';
+import { readNoteDigestShellById, subscribeNoteDigestShells } from '../../core/noteDigestStore';
 import styles from './NoteGrid.module.css';
 import {
 	debugColumnHeightsBefore,
@@ -1667,11 +1668,43 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		() => new Map((workspaceRenderSnapshot?.notes ?? []).map((note) => [note.id, note] as const)),
 		[workspaceRenderSnapshot]
 	);
+	// Card shells the SERVER described, for notes this device has never downloaded.
+	//
+	// Without these, an ordered note with no live doc and no render snapshot renders as a skeleton
+	// at estimateUnmeasuredNoteHeightPx() — a height derived by HASHING THE NOTE ID. That is the
+	// "5 blank cards that then populate and resize" report: blank, and the wrong size, from a cache
+	// that simply cannot contain a note it was never told about (the render snapshot is per-device
+	// localStorage). See src/core/noteDigestStore.ts.
+	const [noteDigestShellVersion, setNoteDigestShellVersion] = React.useState(0);
+	React.useEffect(
+		() => subscribeNoteDigestShells(() => setNoteDigestShellVersion((version) => version + 1)),
+		[]
+	);
+	const digestShellById = React.useMemo(
+		() => readNoteDigestShellById(props.activeWorkspaceId),
+		// noteDigestShellVersion is the point: the digest usually lands a few hundred ms into a
+		// boot, well after this grid first rendered, so without it the shells would sit in storage
+		// unread until the next workspace switch.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[props.activeWorkspaceId, noteDigestShellVersion]
+	);
 	const snapshotDocCacheRef = React.useRef<Map<string, { signature: string; doc: Y.Doc }>>(new Map());
 	const snapshotDocById = React.useMemo(() => {
 		const nextCache = new Map<string, { signature: string; doc: Y.Doc }>();
 		const nextDocs = new Map<string, Y.Doc>();
-		for (const note of workspaceRenderSnapshot?.notes ?? []) {
+		// Precedence is live doc > this device's measured snapshot > server digest shell, and it is
+		// enforced HERE, by what this map contains, rather than by which cache was written last.
+		// Write ordering was the first attempt and it failed: seeding shells into the render
+		// snapshot got them wiped by the grid's own debounced write within a couple of hundred
+		// milliseconds, because that snapshot is read once per workspace and rebuilt from live docs
+		// plus the stale read. A read-time rule holds no matter who wrote when.
+		const measuredNoteIds = new Set((workspaceRenderSnapshot?.notes ?? []).map((note) => note.id));
+		const sources = [
+			// Skipping ids the snapshot already covers avoids building a Y.Doc only to throw it away.
+			...Array.from(digestShellById.values()).filter((shell) => !measuredNoteIds.has(shell.id)),
+			...(workspaceRenderSnapshot?.notes ?? []),
+		];
+		for (const note of sources) {
 			const signature = JSON.stringify(note);
 			const cached = snapshotDocCacheRef.current.get(note.id);
 			const doc = cached && cached.signature === signature
@@ -1682,7 +1715,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		}
 		snapshotDocCacheRef.current = nextCache;
 		return nextDocs;
-	}, [workspaceRenderSnapshot]);
+	}, [digestShellById, workspaceRenderSnapshot]);
 	React.useEffect(() => {
 		if (!props.activeWorkspaceId) return;
 		void logClientEvent(cachedLayoutSnapshot ? 'LAYOUT_CACHE_HIT' : 'LAYOUT_CACHE_MISS', {
