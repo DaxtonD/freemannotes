@@ -618,6 +618,9 @@ function createApiAuthRouter({ prisma }) {
 					// If the DB role differs from the role in the session cookie, refresh the cookie.
 					// This keeps long-lived sessions consistent after admin promotion/demotion.
 					let preferredWorkspaceId = session.workspaceId || null;
+					// Hoisted so the repair upsert further down can tell an unchanged workspace from
+					// a changed one. See the comment on that upsert for why that matters.
+					let devicePref = null;
 					if (deviceId) {
 						try {
 							// Read before writing. This used to upsert the row FIRST, seeding it with
@@ -630,6 +633,7 @@ function createApiAuthRouter({ prisma }) {
 								where: { userId_deviceId: { userId: user.id, deviceId } },
 								select: { activeWorkspaceId: true },
 							});
+							devicePref = pref;
 							if (pref && pref.activeWorkspaceId) {
 								preferredWorkspaceId = String(pref.activeWorkspaceId);
 							} else {
@@ -645,7 +649,30 @@ function createApiAuthRouter({ prisma }) {
 					}
 
 					const effectiveWorkspaceId = await resolveLiveWorkspaceId(prisma, user.id, preferredWorkspaceId);
-					if (deviceId) {
+					// Only write when the workspace actually CHANGED.
+					//
+					// `updatedAt` is `@updatedAt`, and findLastActiveWorkspaceId() orders by it to
+					// answer "which workspace did this user last choose" for a device with no row of
+					// its own — which is the normal case after clearing site data, because the device
+					// id is a fingerprint over userAgent/screen/DPR/cores/timezone/language and any
+					// of those shifting presents the same machine as a new device.
+					//
+					// This endpoint is called on every session refresh, and it used to rewrite the
+					// row unconditionally, so `updatedAt` tracked "most recent session refresh on any
+					// device" rather than "most recently chosen workspace". Whichever device had
+					// pinged most recently won, which is how clearing the cache dropped people into a
+					// workspace they had not opened in weeks.
+					//
+					// Known limit: a device-preference write from preferencesRouter (font scale and
+					// friends) still bumps `updatedAt`. This removes the dominant noise source, not
+					// all of it. If it proves insufficient the honest fix is a dedicated
+					// `activeWorkspaceChangedAt` column, which needs a migration.
+					const deviceWorkspaceUnchanged = Boolean(
+						devicePref
+						&& devicePref.activeWorkspaceId
+						&& String(devicePref.activeWorkspaceId) === String(effectiveWorkspaceId)
+					);
+					if (deviceId && !deviceWorkspaceUnchanged) {
 						try {
 							await prisma.userDevicePreference.upsert({
 								where: { userId_deviceId: { userId: user.id, deviceId } },

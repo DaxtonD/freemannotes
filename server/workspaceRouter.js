@@ -133,11 +133,14 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 					const deviceId = normalizeDeviceId(url.searchParams.get('deviceId'));
 					let preferredWorkspaceId = session.workspaceId || null;
+					// Hoisted so the repair upsert below can skip writing an unchanged value.
+					let devicePref = null;
 					try {
 						const pref = await prisma.userDevicePreference.findUnique({
 							where: { userId_deviceId: { userId: session.userId, deviceId } },
 							select: { activeWorkspaceId: true },
 						});
+						devicePref = pref;
 						if (pref && pref.activeWorkspaceId) {
 							preferredWorkspaceId = String(pref.activeWorkspaceId);
 						} else {
@@ -152,24 +155,43 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						// Ignore preference lookup failure; fallback to session cookie.
 					}
 					const activeWorkspaceId = await resolveLiveWorkspaceId(prisma, session.userId, preferredWorkspaceId);
+					// Only write when it actually CHANGED — the same guard as authRouter's
+					// /api/auth/me, and the same rule preferencesRouter already applies when it saves
+					// this field.
+					//
+					// This endpoint is hit on every app load and sidebar refresh. Rewriting the row
+					// each time bumped `updatedAt`, which is the column findLastActiveWorkspaceId()
+					// sorts by to decide which workspace a user last CHOSE when their device has no
+					// row of its own — the normal case after clearing site data, because the device id
+					// is a fingerprint and any of its inputs shifting looks like a new device. With
+					// every read bumping it, that ordering tracked "most recent app load on any
+					// device" instead, which is how clearing the cache dropped people into a
+					// workspace they had not opened in weeks.
+					const deviceWorkspaceUnchanged = Boolean(
+						devicePref
+						&& devicePref.activeWorkspaceId
+						&& String(devicePref.activeWorkspaceId) === String(activeWorkspaceId)
+					);
 					try {
-						await prisma.userDevicePreference.upsert({
-							where: { userId_deviceId: { userId: session.userId, deviceId } },
-							update: { activeWorkspaceId },
-							create: {
-								userId: session.userId,
-								deviceId,
-								activeWorkspaceId,
-								noteCardFontScale: 0.85,
-								noteEditorFontScale: 0.85,
-								noteCardMaxHeightPx: 400,
-								editorToolbarMode: 'condensed',
-								checklistShowCompleted: false,
-								quickDeleteChecklist: false,
-								showMarkdownToggle: false,
-								noteCardCompletedExpandedByNoteId: {},
-							},
-						});
+						if (!deviceWorkspaceUnchanged) {
+							await prisma.userDevicePreference.upsert({
+								where: { userId_deviceId: { userId: session.userId, deviceId } },
+								update: { activeWorkspaceId },
+								create: {
+									userId: session.userId,
+									deviceId,
+									activeWorkspaceId,
+									noteCardFontScale: 0.85,
+									noteEditorFontScale: 0.85,
+									noteCardMaxHeightPx: 400,
+									editorToolbarMode: 'condensed',
+									checklistShowCompleted: false,
+									quickDeleteChecklist: false,
+									showMarkdownToggle: false,
+									noteCardCompletedExpandedByNoteId: {},
+								},
+							});
+						}
 					} catch {
 						// Ignore device preference repair failure.
 					}
