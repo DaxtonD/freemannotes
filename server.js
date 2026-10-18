@@ -150,6 +150,10 @@ function sendRoleAware(doc, conn, message) {
 function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice(1).split('?')[0], gc = true, readOnly = false, userId = null } = {}) {
 	conn.binaryType = 'arraybuffer';
 	const doc = getYDoc(docName, gc);
+	// Watch for changes that matter before any sync message is processed, so both the per-update
+	// path and the SyncStep2 (reconnect / page refresh) path are judged the same way. WeakSet-guarded
+	// inside, so this is a no-op after the first connection to a room.
+	watchNoteDocForMeaningfulChanges(isNoteRoomName(docName) ? doc : null);
 	doc.conns.set(conn, new Set());
 
 	conn.on('message', (message) => {
@@ -190,19 +194,25 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 							// activities created during _syncEntityReferences have no actor.
 							if (userId) {
 								persistAdapter?.recordDocUpdate(docName, userId);
-								// Offline sync-back: SyncStep2 carries everything this client wrote
-								// while away, so it is a real change by a real author and the grid
-								// needs to know who.
-								noteChangeNotifier?.recordChange(docName, userId);
+								// SyncStep2 is also what a plain PAGE REFRESH sends, so announcing it
+								// unconditionally told the other side "they edited it" every time
+								// somebody reloaded. Only announce if the merge actually moved
+								// something a card would show.
+								if (announceNoteChangeIfMeaningful(docName, doc, userId)) {
+									noteChangeNotifier?.recordChange(docName, userId);
+								}
 							}
 						}
 					} else if (syncMessageType === syncProtocol.messageYjsUpdate) {
+						watchNoteDocForMeaningfulChanges(isNoteRoomName(docName) ? doc : null);
 						syncProtocol.readUpdate(decoder, doc, conn);
 						if (userId) {
 							persistAdapter?.recordDocUpdate(docName, userId);
 							// Fires per keystroke. recordChange coalesces per room - see
 							// server/noteChangeEvents.js, where the debouncing is the whole point.
-							noteChangeNotifier?.recordChange(docName, userId);
+							if (announceNoteChangeIfMeaningful(docName, doc, userId)) {
+								noteChangeNotifier?.recordChange(docName, userId);
+							}
 						}
 					}
 					if (encoding.length(encoder) > 1) {
@@ -287,6 +297,11 @@ let redisSubscriber = null;
 
 let unsubscribeWorkspaceMetadataEvents = async () => {};
 
+const {
+	watchNoteDocForMeaningfulChanges,
+	consumeMeaningfulChange,
+} = require('./server/noteChangeEvents');
+
 const SERVER_INSTANCE_ID = `${process.pid}:${Math.random().toString(36).slice(2, 10)}`;
 
 /** @type {import('./server/YjsPersistenceAdapter').YjsPersistenceAdapter | null} */
@@ -302,6 +317,35 @@ let apiRouter = null;
  * with that, because a change nobody can be told about is not worth failing a write over.
  */
 let noteChangeNotifier = null;
+
+/**
+ * Is this a NOTE room, as opposed to a registry or a markup room?
+ *
+ * Only note rooms get the meaningful-change filter. A registry update is allowed through
+ * unconditionally, because the client treats that event as nothing more than attribution and works
+ * out for itself - by diffing the note list - whether anything was added or removed. So a
+ * redundant registry event costs nothing, while a missed one would lose the attribution.
+ */
+function isNoteRoomName(docName) {
+	const { parseRoomName, classifyRoom } = require('./server/noteChangeEvents');
+	const parsed = parseRoomName(docName);
+	if (!parsed) return false;
+	return classifyRoom(parsed.rest) === 'note-changed';
+}
+
+/**
+ * Should this update be announced?
+ *
+ * Note rooms have to have changed something a card would display; everything else passes through.
+ * See UNINTERESTING_METADATA_KEYS in server/noteChangeEvents.js for what does not count - opening
+ * a note writes `lastAccessedAt` into SHARED metadata, so reading somebody's note used to tell
+ * them you had edited it.
+ */
+function announceNoteChangeIfMeaningful(docName, doc, userId) {
+	if (!userId) return false;
+	if (!isNoteRoomName(docName)) return true;
+	return consumeMeaningfulChange(doc);
+}
 
 /** @type {ReturnType<import('./server/authRouter').createApiAuthRouter> | null} */
 let authRouter = null;

@@ -49,10 +49,87 @@
  * business being told that the workspace's note LIST changed.
  */
 
-/** Quiet period before a room's change is announced. */
-const NOTE_CHANGE_DEBOUNCE_MS = 2500;
-/** Announce at least this often during continuous editing, so a long burst still reports. */
-const NOTE_CHANGE_MAX_WAIT_MS = 10_000;
+/**
+ * Metadata keys that move WITHOUT anything on the card changing.
+ *
+ * `lastAccessedAt` is written by simply OPENING a note (`markNoteAccessed`), and it lives in
+ * shared Yjs metadata, so one person reading a note sends an update to everybody else. `updatedAt`
+ * is stamped on every local transaction. Treating either as a change produced three reported bugs
+ * at once: opening a note told your collaborator you had edited it, closing it told them again,
+ * and refreshing the page told them a third time.
+ */
+const UNINTERESTING_METADATA_KEYS = new Set(['lastAccessedAt', 'updatedAt']);
+
+/** Docs already being watched, so observers attach once per room rather than per update. */
+const observedDocs = new WeakSet();
+/** Set by those observers when something a card would DISPLAY actually changed. */
+const meaningfulChangeFlags = new WeakMap();
+
+/**
+ * Watch a note document for changes that matter, and ignore the ones that do not.
+ *
+ * Observers rather than comparing snapshots, because Yjs already knows precisely which keys a
+ * transaction touched - `event.keysChanged` is exactly the question being asked here. Hashing
+ * content before and after would be both less accurate (equal-length edits) and far more
+ * expensive (per keystroke, on documents up to a megabyte).
+ */
+function watchNoteDocForMeaningfulChanges(doc) {
+	if (!doc || observedDocs.has(doc)) return;
+	observedDocs.add(doc);
+	const mark = () => meaningfulChangeFlags.set(doc, true);
+	try {
+		doc.getMap('metadata').observe((event) => {
+			for (const key of event.keysChanged) {
+				if (!UNINTERESTING_METADATA_KEYS.has(key)) {
+					mark();
+					return;
+				}
+			}
+		});
+		// Anything below is content by definition.
+		doc.getText('title').observe(mark);
+		doc.getText('content').observe(mark);
+		doc.getXmlFragment('contentRich').observeDeep(mark);
+		doc.getArray('checklist').observeDeep(mark);
+		doc.getArray('drawingIds').observe(mark);
+	} catch {
+		// If observers cannot be attached, fall back to announcing every update rather than going
+		// silent - a spurious chip is a smaller failure than a change nobody hears about.
+		meaningfulChangeFlags.set(doc, true);
+	}
+}
+
+/**
+ * Did the update that just landed change anything worth telling anyone about?
+ *
+ * Consumes the flag, so each update is judged on its own.
+ */
+function consumeMeaningfulChange(doc) {
+	if (!doc) return true;
+	// Never watched means we cannot judge, so announce. Going silent on a real edit is a far worse
+	// failure than a redundant chip, and this also removes any dependence on the observers having
+	// been attached before the update was applied.
+	if (!observedDocs.has(doc)) return true;
+	const flagged = meaningfulChangeFlags.get(doc) === true;
+	meaningfulChangeFlags.delete(doc);
+	return flagged;
+}
+
+/**
+ * Quiet period before a room's change is announced.
+ *
+ * Raised from 2.5s: a chip that appears while somebody is still mid-sentence is noise, and the
+ * card itself is already updating live, so nothing is actually being withheld by waiting. 10s
+ * means "they stopped typing" rather than "they paused to think".
+ */
+const NOTE_CHANGE_DEBOUNCE_MS = 10000;
+/**
+ * Announce at least this often during continuous editing, so a long burst still reports.
+ *
+ * The ceiling exists because somebody typing without pause never trips the debounce at all. A
+ * minute is the most anyone should wait to hear that a note is being worked on.
+ */
+const NOTE_CHANGE_MAX_WAIT_MS = 60_000;
 /** Membership rarely changes and this runs per burst, so a short cache is plenty. */
 const MEMBER_CACHE_TTL_MS = 30_000;
 
@@ -235,6 +312,8 @@ function createNoteChangeNotifier(options = {}) {
 
 module.exports = {
 	createNoteChangeNotifier,
+	watchNoteDocForMeaningfulChanges,
+	consumeMeaningfulChange,
 	parseRoomName,
 	classifyRoom,
 	NOTE_CHANGE_DEBOUNCE_MS,
