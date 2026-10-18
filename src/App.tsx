@@ -28,6 +28,7 @@ import {
 	faTrash,
 	faXmark,
 	faFilter,
+	faArrowsRotate,
 	faChevronDown,
 	faCloudArrowDown,
 } from '@fortawesome/free-solid-svg-icons';
@@ -174,6 +175,17 @@ import {
 	flushPendingNoteDocumentDeletes,
 } from './core/noteDocumentDeleteQueue';
 import { clearNoteDigestCursors, seedWorkspaceDigest } from './core/noteDigestSeed';
+import {
+	applyNoteEdited,
+	applyNoteListDiff,
+	clearPendingNoteChanges,
+	createEmptyPendingNoteChanges,
+	diffNoteIds,
+	pendingAddedNoteIds,
+	resolveNoteChange,
+	summarisePendingNoteChanges,
+	type PendingNoteChangeState,
+} from './core/pendingNoteChanges';
 import { clearAllNoteDigestShells } from './core/noteDigestStore';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
@@ -1234,6 +1246,16 @@ function writeSharedPlacementsCache(userId: string | null | undefined, placement
  * someone to "check your connection" when their connection is fine, just slow, sends them off to
  * fix something that is not broken.
  */
+/**
+ * How long an attribution stays usable for correlating with a note-list diff.
+ *
+ * The server coalesces note changes on a 2.5s trailing edge, so the event can legitimately arrive
+ * a few seconds after the Yjs update that caused it - or before. Generous enough to cover that
+ * ordering either way, short enough that an unrelated later diff is not credited to the wrong
+ * person.
+ */
+const NOTE_CHANGE_ATTRIBUTION_WINDOW_MS = 15000;
+
 const AUTH_TIMEOUT_RECOVERY_KEY = 'freemannotes.authTimeoutRecovery.v1';
 
 /**
@@ -1986,6 +2008,33 @@ export function App(): React.JSX.Element {
 	const [pendingImportWorkspaceId, setPendingImportWorkspaceId] = React.useState<string | null>(null);
 	const [pendingImportNoteCount, setPendingImportNoteCount] = React.useState(0);
 	const [importSyncPending, setImportSyncPending] = React.useState(0);
+	/**
+	 * Changes made by other people that have NOT been applied to the grid yet.
+	 *
+	 * See `src/core/pendingNoteChanges.ts` for the rules. Held per workspace by being cleared on
+	 * every switch, which is also one of the agreed flush points.
+	 */
+	const [pendingNoteChanges, setPendingNoteChanges] = React.useState<PendingNoteChangeState>(
+		() => createEmptyPendingNoteChanges()
+	);
+	/** The note id list the grid is currently showing, i.e. what a diff is measured against. */
+	const lastSeenNoteIdsRef = React.useRef<string[]>([]);
+	/**
+	 * The most recent attribution for a note-list change in this workspace.
+	 *
+	 * The registry event and the local Yjs update are not ordered with respect to each other, so
+	 * the two are correlated by time rather than by sequence: a diff picks up an attribution that
+	 * arrived within the window below, and is treated as somebody else's work if there is none.
+	 */
+	const noteOrderAttributionRef = React.useRef<{ byUserId: string | null; at: number } | null>(null);
+	/**
+	 * Whether the grid has finished its first paint.
+	 *
+	 * Load-bearing: during startup the note order goes from empty to full, which would otherwise
+	 * register every note in the workspace as a new arrival and withhold the entire grid. Startup
+	 * changes are merged silently - the splash is already covering that wait.
+	 */
+	const pendingChangesArmedRef = React.useRef(false);
 	/**
 	 * What the splash is waiting for, so it can say so.
 	 *
@@ -3717,6 +3766,9 @@ export function App(): React.JSX.Element {
 	const openNoteEditor = React.useCallback(
 		(noteId: string, opts?: NoteEditorOpenOptions) => {
 			markNoteAccessed(manager.getDoc(noteId), manager.getAccessOrigin());
+			// Opening a note IS seeing it, so whatever was flagged on it stops being news - the chip
+			// goes and the count drops. Covers editing it too: you cannot edit what you did not open.
+			setPendingNoteChanges((state) => resolveNoteChange(state, noteId));
 			const current = getOverlaySnapshot();
 			const mobileOverlay = shouldUseMobileOverlayHistory(isMobileViewport);
 			if (opts?.fromExternalDeepLink && mobileOverlay) {
@@ -7017,6 +7069,96 @@ export function App(): React.JSX.Element {
 		return () => window.clearTimeout(timerId);
 	}, [splashGone, gridReady]);
 
+	/**
+	 * Watch the note list and record what other people change.
+	 *
+	 * Driven by the LOCAL Yjs array rather than by the server event, which is deliberate: a
+	 * registry event is only a prompt, not a description. Measured during development - registry
+	 * writes arrive for reasons that have nothing to do with notes being added or removed, so
+	 * reacting to the event directly would count phantom changes and claim "2 new notes" when
+	 * nothing was added. The diff decides what happened; the event only says who did it.
+	 */
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authWorkspaceId) return;
+		let cancelled = false;
+		let detach = (): void => {};
+		void (async () => {
+			const noteOrder = await manager.getNoteOrder().catch(() => null);
+			if (cancelled || !noteOrder) return;
+			const readIds = (): string[] => noteOrder.toArray().filter((value): value is string => typeof value === 'string');
+			lastSeenNoteIdsRef.current = readIds();
+			const onChange = (): void => {
+				const next = readIds();
+				// Until the first paint is done, follow the list without judging it.
+				if (!pendingChangesArmedRef.current) {
+					lastSeenNoteIdsRef.current = next;
+					return;
+				}
+				const { added, removed } = diffNoteIds(lastSeenNoteIdsRef.current, next);
+				if (added.length === 0 && removed.length === 0) {
+					lastSeenNoteIdsRef.current = next;
+					return;
+				}
+				const attribution = noteOrderAttributionRef.current;
+				const fresh = attribution && Date.now() - attribution.at < NOTE_CHANGE_ATTRIBUTION_WINDOW_MS
+					? attribution
+					: null;
+				setPendingNoteChanges((state) => applyNoteListDiff(state, {
+					added,
+					removed,
+					byUserId: fresh ? fresh.byUserId : null,
+					at: Date.now(),
+					authUserId: authUserId ?? null,
+				}));
+				// Accounted for, so the next diff measures from here.
+				lastSeenNoteIdsRef.current = next;
+			};
+			noteOrder.observe(onChange);
+			detach = () => noteOrder.unobserve(onChange);
+		})();
+		return () => {
+			cancelled = true;
+			detach();
+		};
+	}, [authStatus, authWorkspaceId, authUserId, manager]);
+
+	// Arm only once the splash has gone, so the startup fill-in is never mistaken for new arrivals.
+	React.useEffect(() => {
+		if (!gridReady) return;
+		pendingChangesArmedRef.current = true;
+	}, [gridReady]);
+
+	// A workspace switch is a flush point, and the pending set is per workspace anyway.
+	const prevPendingWorkspaceRef = React.useRef<string | null>(authWorkspaceId);
+	React.useEffect(() => {
+		if (prevPendingWorkspaceRef.current === authWorkspaceId) return;
+		prevPendingWorkspaceRef.current = authWorkspaceId;
+		pendingChangesArmedRef.current = false;
+		noteOrderAttributionRef.current = null;
+		lastSeenNoteIdsRef.current = [];
+		setPendingNoteChanges((state) => clearPendingNoteChanges(state));
+	}, [authWorkspaceId]);
+
+	const [isPendingChangesOpen, setIsPendingChangesOpen] = React.useState(false);
+	// Nothing pending means nothing to show, so the popover must not survive a flush.
+	React.useEffect(() => {
+		if (pendingNoteChanges.size === 0) setIsPendingChangesOpen(false);
+	}, [pendingNoteChanges]);
+
+	/** Apply everything that was held back. */
+	const flushPendingNoteChanges = React.useCallback(() => {
+		setPendingNoteChanges((state) => clearPendingNoteChanges(state));
+	}, []);
+
+	const pendingNoteChangeSummary = React.useMemo(
+		() => summarisePendingNoteChanges(pendingNoteChanges),
+		[pendingNoteChanges]
+	);
+	const withheldNoteIds = React.useMemo(
+		() => pendingAddedNoteIds(pendingNoteChanges),
+		[pendingNoteChanges]
+	);
+
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
 		return sharedWorkspace?.id ?? null;
@@ -7897,6 +8039,39 @@ export function App(): React.JSX.Element {
 						&& payload.reason.startsWith('note-links-');
 					const isUserProfileMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& payload.reason === 'user-profile-updated';
+					// Who changed what. A note-level event marks that note as edited; a registry
+					// event only supplies attribution, because the diff above is what decides
+					// whether anything was actually added or removed.
+					if (payload.type === 'workspace-metadata-changed' && payload.reason === 'note-order-changed') {
+						noteOrderAttributionRef.current = {
+							byUserId: typeof payload.changedUserId === 'string' ? payload.changedUserId : null,
+							at: Date.now(),
+						};
+					}
+					if (payload.type === 'workspace-metadata-changed' && payload.reason === 'note-changed') {
+						const changedDocId = typeof payload.docId === 'string' ? payload.docId : '';
+						const changedBy = typeof payload.changedUserId === 'string' ? payload.changedUserId : null;
+						if (changedDocId && pendingChangesArmedRef.current) {
+							// The grid keys a note shared WITH you by its placement alias, not by the
+							// room it lives in - that room belongs to the owner's workspace. So the
+							// docId has to be translated before it means anything here.
+							const aliasForRoom = sharedPlacementsRef.current.find(
+								(placement) => String(placement.roomId || '') === changedDocId
+							);
+							const separatorIndex = changedDocId.indexOf(':');
+							const gridNoteId = aliasForRoom
+								? aliasForRoom.aliasId
+								: (separatorIndex > 0 ? changedDocId.slice(separatorIndex + 1) : '');
+							if (gridNoteId) {
+								setPendingNoteChanges((state) => applyNoteEdited(state, {
+									noteId: gridNoteId,
+									byUserId: changedBy,
+									at: Date.now(),
+									authUserId: authUserId ?? null,
+								}));
+							}
+						}
+					}
 					if (
 						payload.type === 'workspace-metadata-changed' &&
 						payload.reason === 'workspace-deleted' &&
@@ -12836,6 +13011,56 @@ export function App(): React.JSX.Element {
 							) : null}
 
 							<div className="note-grid-scope" aria-live="polite">
+								{/* Changes other people made, held back until the user asks for them.
+								    A sibling of the workspace/filter chips rather than part of the
+								    workspace chip, because that chip is not rendered at all once any
+								    filter is active - there would be nothing to attach to. Hidden
+								    while an editor is open so it never interrupts writing. */}
+								{pendingNoteChangeSummary.total > 0 && !isEditorOverlayOpen ? (
+									<div className="note-grid-pending-wrap">
+										<div
+											// Remounting on each count change restarts the one-shot pulse
+											// without needing a looping animation, which would be exactly the
+											// "loud" this is meant to avoid.
+											key={pendingNoteChangeSummary.total}
+											className="note-grid-scope-chip is-interactive note-grid-pending-chip"
+											role="button"
+											tabIndex={0}
+											aria-haspopup="dialog"
+											aria-expanded={isPendingChangesOpen}
+											aria-label={t('grid.pendingChangesAria').replace('{count}', String(pendingNoteChangeSummary.total))}
+											onClick={() => setIsPendingChangesOpen((open) => !open)}
+											onKeyDown={(event) => {
+												if (event.key !== 'Enter' && event.key !== ' ') return;
+												event.preventDefault();
+												setIsPendingChangesOpen((open) => !open);
+											}}
+										>
+											<FontAwesomeIcon icon={faArrowsRotate} />
+											<span className="note-grid-pending-count">{pendingNoteChangeSummary.total}</span>
+										</div>
+										{isPendingChangesOpen ? (
+											<div className="note-grid-pending-panel" role="dialog" aria-label={t('grid.pendingChangesTitle')}>
+												<p className="note-grid-pending-breakdown">
+													{t('grid.pendingChangesBreakdown')
+														.replace('{new}', String(pendingNoteChangeSummary.added))
+														.replace('{removed}', String(pendingNoteChangeSummary.removed))
+														.replace('{edited}', String(pendingNoteChangeSummary.edited))}
+												</p>
+												<button
+													type="button"
+													className="note-grid-pending-apply"
+													onClick={() => {
+														flushPendingNoteChanges();
+														setIsPendingChangesOpen(false);
+													}}
+												>
+													{t('grid.pendingChangesShow')}
+												</button>
+											</div>
+										) : null}
+									</div>
+								) : null}
 								{viewMode === 'bubble' && sidebarView !== 'images' && sidebarView !== 'documents' ? (
 									<div className="note-grid-scope-chip">
 										<ScrollingScopeChipLabel value="All Workspaces" />
@@ -13042,6 +13267,7 @@ export function App(): React.JSX.Element {
 						onListScrollAnchorApplied={handleListScrollAnchorApplied}
 						loadDrawingDoc={loadDrawingDoc}
 						isPostImportSync={authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId}
+						withheldNoteIds={withheldNoteIds}
 						onAllDocsLoaded={() => {
 							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
 								setPendingImportWorkspaceId(null);

@@ -1043,6 +1043,10 @@ const FALLBACK_MESSAGES: Dictionary = {
 		pendingSync: 'Pending sync',
 	},
 	grid: {
+		pendingChangesAria: '{count} changes from other people you have not seen yet',
+		pendingChangesShow: 'Show changes',
+		pendingChangesBreakdown: '{new} new · {removed} removed · {edited} edited',
+		pendingChangesTitle: 'Changes from other people',
 		loadingNotes: 'Loading notes…',
 		notes: 'Notes',
 		notesGrid: 'Notes Grid',

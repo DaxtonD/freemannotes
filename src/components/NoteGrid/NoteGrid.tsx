@@ -254,6 +254,15 @@ export type NoteGridProps = {
 	isPostImportSync?: boolean;
 	/** Fires the first time allDocsLoaded becomes true (per mount). */
 	onAllDocsLoaded?: () => void;
+	/**
+	 * Notes that exist in the registry but must NOT be rendered yet, because they arrived from
+	 * somebody else while the user was looking at the grid. Rendering them on arrival is the
+	 * layout shift the pending-changes mechanism exists to prevent; they appear on flush.
+	 *
+	 * The selected note is never withheld, however this set is populated - a note the user has
+	 * deliberately opened has to be on screen.
+	 */
+	withheldNoteIds?: ReadonlySet<string>;
 	/** Fires whenever pendingNoteWsSync changes value. */
 	/**
 	 * Fires whenever the number of note rooms still awaiting their first WS sync changes.
@@ -2415,7 +2424,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		};
 	}, [docsById]);
 
-	const orderedIds = React.useMemo<string[]>(() => {
+	const registryOrderedIds = React.useMemo<string[]>(() => {
 		if (!noteOrder) {
 			// IDB registry not yet hydrated — use the localStorage snapshot so skeleton
 			// cards occupy the correct grid positions on the very first render.
@@ -2442,6 +2451,31 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		const ids = uniqueIds(readOrderIds(noteOrder));
 		return ids;
 	}, [noteOrder, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot, connection.registryWsSynced]);
+
+	/**
+	 * The order the grid works from, with notes that arrived unseen from somebody else held back.
+	 *
+	 * `orderedIds` deliberately MEANS "the renderable order" from here down, and the raw registry
+	 * order is `registryOrderedIds` above. Doing it this way round is what keeps packing,
+	 * virtualization, measurement, snapshot persistence and the startup gates agreeing with each
+	 * other - filtering at the render sites instead is how a note ends up counted by the layout but
+	 * never drawn.
+	 *
+	 * **This cannot lose a note from the registry**, which was worth checking before doing it. The
+	 * drag commit takes its base from the live Yjs array (`readOrderIds(noteOrder)`) and splices the
+	 * visible subset's new order into it via `mergeVisibleOrderIntoFullOrder`, which passes
+	 * everything outside that subset through untouched. It is the same mechanism that already makes
+	 * dragging inside a search or collection filter safe.
+	 */
+	const orderedIds = React.useMemo<string[]>(() => {
+		const withheld = props.withheldNoteIds;
+		if (!withheld || withheld.size === 0) return registryOrderedIds;
+		const selected = props.selectedNoteId;
+		const filtered = registryOrderedIds.filter((id) => !withheld.has(id) || id === selected);
+		// Same array identity when nothing was actually withheld, so the long memo chain below does
+		// not churn for the common case.
+		return filtered.length === registryOrderedIds.length ? registryOrderedIds : filtered;
+	}, [registryOrderedIds, props.withheldNoteIds, props.selectedNoteId]);
 
 	const sharedPlacementByAlias = React.useMemo(
 		() => new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement] as const)),

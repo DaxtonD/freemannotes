@@ -942,6 +942,10 @@
     "pendingSync": "Sincronización pendiente"
   },
   "grid": {
+    "pendingChangesAria": "{count} cambios de otras personas que aún no has visto",
+    "pendingChangesShow": "Mostrar cambios",
+    "pendingChangesBreakdown": "{new} nuevas · {removed} eliminadas · {edited} editadas",
+    "pendingChangesTitle": "Cambios de otras personas",
     "loadingNotes": "Cargando notas…",
     "notes": "Notas",
     "notesGrid": "Cuadrícula de notas",

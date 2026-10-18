@@ -4354,3 +4354,81 @@
 	color: var(--color-text-muted, var(--color-text));
 	opacity: 0.8;
 }
+
+/* ── Pending changes from other people ───────────────────────────────────────
+ * Sits beside the workspace/filter chips rather than floating over the grid: a
+ * floating overlay would have had to be positioned just so to avoid causing the
+ * very layout shift this whole mechanism exists to remove, and this row is
+ * already present and already announces itself (aria-live). */
+.note-grid-pending-wrap {
+	position: relative;
+	display: inline-flex;
+}
+
+.note-grid-pending-chip {
+	gap: 6px;
+	cursor: pointer;
+	/* Accent border carries the signal; a darkening alone is invisible on dark
+	 * themes and on the darker note-colour tokens. */
+	border-color: var(--color-accent, var(--color-border));
+	animation: notePendingPulse 900ms ease-out 1;
+}
+
+/* One shot, never looping. The element is remounted on each count change to
+ * replay it, because a looping pulse is exactly the "loud" this avoids. */
+@keyframes notePendingPulse {
+	0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent, var(--color-text)) 55%, transparent); }
+	100% { box-shadow: 0 0 0 10px transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.note-grid-pending-chip { animation: none; }
+}
+
+.note-grid-pending-count {
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+/* The panel is what makes the chip obviously actionable - a chip that silently
+ * rearranges the grid when pressed is a worse affordance than one that opens
+ * something. */
+.note-grid-pending-panel {
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 0;
+	z-index: 40;
+	min-width: 200px;
+	padding: 10px 12px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+	/* Its own scroll containment, per the modal/overlay rule in CLAUDE.md -
+	 * every scrollable thing in an overlay needs this or the grid scrolls
+	 * behind it on a coarse pointer. */
+	overscroll-behavior: contain;
+}
+
+.note-grid-pending-breakdown {
+	margin: 0 0 8px;
+	font-size: 12px;
+	color: var(--color-text-muted, var(--color-text));
+}
+
+.note-grid-pending-apply {
+	width: 100%;
+	padding: 6px 10px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface-2, var(--color-surface));
+	color: var(--color-text);
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.note-grid-pending-apply:hover,
+.note-grid-pending-apply:focus-visible {
+	border-color: var(--color-accent, var(--color-border));
+}
