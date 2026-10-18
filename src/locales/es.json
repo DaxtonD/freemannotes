@@ -17,6 +17,8 @@
     "offline": "Estás sin conexión."
   },
   "app": {
+    "splashSyncProgress": "{synced} de {total} notas cargadas",
+    "splashSlowConnection": "Tu conexión parece lenta: esto puede tardar un momento.",
     "newTextNote": "Nueva nota de texto",
     "newChecklist": "Nueva lista",
     "loadingEditor": "Cargando editor…",
@@ -225,6 +227,9 @@
     "userEmailLabel": "Correo electrónico"
   },
   "auth": {
+    "signInStillWorking": "Seguimos iniciándote sesión… esto puede tardar un momento con una conexión lenta.",
+    "pleaseWait": "Espera…",
+    "signInSlow": "El inicio de sesión está tardando más de lo normal. Tu conexión puede ser lenta: espera un momento y vuelve a intentarlo.",
     "language": "Idioma",
     "languageHint": "Tu nota de bienvenida se creará en el idioma seleccionado.",
     "connectionTimeout": "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo."
@@ -937,6 +942,7 @@
     "pendingSync": "Sincronización pendiente"
   },
   "grid": {
+    "loadingNotes": "Cargando notas…",
     "notes": "Notas",
     "notesGrid": "Cuadrícula de notas",
     "viewCard": "Vista de tarjetas",

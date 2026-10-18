@@ -93,6 +93,8 @@ const FALLBACK_MESSAGES: Dictionary = {
 		offline: 'You are offline.',
 	},
 	app: {
+		splashSyncProgress: '{synced} of {total} notes loaded',
+		splashSlowConnection: 'Your connection looks slow — this may take a moment.',
 		newTextNote: 'New Text Note',
 		newChecklist: 'New Checklist',
 		loadingEditor: 'Loading editor…',
@@ -284,6 +286,9 @@ const FALLBACK_MESSAGES: Dictionary = {
 		themeCategoryTokyoNight: 'Tokyo Night',
 	},
 	auth: {
+		signInStillWorking: 'Still signing you in… this can take a moment on a slow connection.',
+		pleaseWait: 'Please wait…',
+		signInSlow: 'Signing in is taking longer than usual. Your connection may be slow — give it a moment, then try again.',
 		language: 'Language',
 		languageHint: 'Your welcome note will be created in the selected language.',
 		connectionTimeout: "Couldn't reach the server. Check your connection and try again.",
@@ -1038,6 +1043,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		pendingSync: 'Pending sync',
 	},
 	grid: {
+		loadingNotes: 'Loading notes…',
 		notes: 'Notes',
 		notesGrid: 'Notes Grid',
 		workspaceNotYetSyncedOffline: "This workspace hasn't finished syncing to this device yet. Connect to the internet to load it.",

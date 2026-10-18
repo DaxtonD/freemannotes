@@ -1225,6 +1225,49 @@ function writeSharedPlacementsCache(userId: string | null | undefined, placement
 	}
 }
 
+/**
+ * Did WE give up, or is the server actually unreachable?
+ *
+ * `isNetworkUnavailableError` deliberately lumps these together, which is right for a background
+ * fetch that only needs to decide "retry or queue". It is wrong on the sign-in path: our own
+ * AbortError means the server was reachable and merely slower than our budget, and telling
+ * someone to "check your connection" when their connection is fine, just slow, sends them off to
+ * fix something that is not broken.
+ */
+const AUTH_TIMEOUT_RECOVERY_KEY = 'freemannotes.authTimeoutRecovery.v1';
+
+/**
+ * Has this tab already tried reloading to recover a timed-out sign-in?
+ *
+ * sessionStorage rather than localStorage on purpose: the guard should last exactly one tab
+ * lifetime. A session that reads valid but cannot finish booting would otherwise reload forever.
+ */
+function readAuthTimeoutRecoveryAttempted(): boolean {
+	if (typeof window === 'undefined') return false;
+	try {
+		return window.sessionStorage.getItem(AUTH_TIMEOUT_RECOVERY_KEY) === '1';
+	} catch {
+		// No sessionStorage (private mode, blocked storage) means no guard, so decline to reload
+		// rather than risk a loop we cannot detect.
+		return true;
+	}
+}
+
+function markAuthTimeoutRecoveryAttempted(): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.sessionStorage.setItem(AUTH_TIMEOUT_RECOVERY_KEY, '1');
+	} catch {
+		// ignore
+	}
+}
+
+function isOwnRequestTimeout(error: unknown): boolean {
+	if (error instanceof DOMException && error.name === 'AbortError') return true;
+	if (error instanceof Error && error.name === 'AbortError') return true;
+	return false;
+}
+
 function clearSharedPlacementsCache(userId: string | null | undefined): void {
 	if (typeof window === 'undefined' || !userId) return;
 	try {
@@ -1480,6 +1523,14 @@ export function App(): React.JSX.Element {
 	const [authPasswordConfirm, setAuthPasswordConfirm] = React.useState('');
 	const [authError, setAuthError] = React.useState<string | null>(null);
 	const [authBusy, setAuthBusy] = React.useState(false);
+	/**
+	 * Shown once signing in has been in flight long enough to look stuck.
+	 *
+	 * The timeout is 30s now, which is the right budget for a blocking action but far too long to
+	 * sit behind an unchanging "Please wait…". A threshold message, not a predicted time — the
+	 * same reasoning as the splash's slow-connection line.
+	 */
+	const [authSlowHint, setAuthSlowHint] = React.useState(false);
 	const [forgotPasswordOpen, setForgotPasswordOpen] = React.useState(false);
 	const [forgotPasswordEmail, setForgotPasswordEmail] = React.useState('');
 	const [forgotPasswordBusy, setForgotPasswordBusy] = React.useState(false);
@@ -1935,6 +1986,22 @@ export function App(): React.JSX.Element {
 	const [pendingImportWorkspaceId, setPendingImportWorkspaceId] = React.useState<string | null>(null);
 	const [pendingImportNoteCount, setPendingImportNoteCount] = React.useState(0);
 	const [importSyncPending, setImportSyncPending] = React.useState(0);
+	/**
+	 * What the splash is waiting for, so it can say so.
+	 *
+	 * Two stages, because the denominator does not exist at first: until the notes registry has
+	 * synced we do not know how many notes there are, so progress can only be a spinner. Once it
+	 * has, `totalOrdered` is the denominator and `pending` is what is left.
+	 */
+	const [startupSyncStatus, setStartupSyncStatus] = React.useState<{
+		pending: number;
+		totalOrdered: number;
+		registrySynced: boolean;
+		digestShellCount: number;
+		connectionState: string;
+	}>({ pending: 0, totalOrdered: 0, registrySynced: false, digestShellCount: 0, connectionState: '' });
+	/** Set once the splash has been up long enough that the connection is clearly the problem. */
+	const [startupLooksSlow, setStartupLooksSlow] = React.useState(false);
 	const [importCompletedNotification, setImportCompletedNotification] = React.useState<{ count: number } | null>(null);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	// Tracks failed-link notification IDs the user has explicitly dismissed so
@@ -6919,6 +6986,37 @@ export function App(): React.JSX.Element {
 		};
 	}, [authStatus, authWorkspaceId, manager, startupHydration.noteOrderIds, visibleSharedPlacements]);
 
+	/**
+	 * When startup last made ANY measurable progress.
+	 *
+	 * The splash's give-up timer used to be a fixed budget, which cannot tell "slow but working"
+	 * from "stuck" — so on a genuinely slow connection it fired while data was still arriving and
+	 * dumped the user onto an empty grid. This is the clock it uses instead: it resets on every
+	 * forward move, so the only thing that ends the wait is real silence.
+	 *
+	 * `digestShellCount` is in the signature on purpose. Before the registry syncs, nothing else
+	 * here changes at all, so without it the first stage of a cold boot would look stalled from
+	 * the very first tick.
+	 */
+	const startupProgressSignature = `${startupSyncStatus.registrySynced}|${startupSyncStatus.totalOrdered}|${startupSyncStatus.pending}|${startupSyncStatus.digestShellCount}|${startupSyncStatus.connectionState}`;
+	const lastStartupProgressAtRef = React.useRef<number>(Date.now());
+	React.useEffect(() => {
+		lastStartupProgressAtRef.current = Date.now();
+	}, [startupProgressSignature]);
+
+	// "Your connection looks slow" is shown on a threshold rather than predicted from throughput.
+	// A wrong time estimate is worse than none, and early samples on a cold boot are far too
+	// unstable to extrapolate from — if we ever want a real estimate, it needs measurement first.
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		if (splashGone || gridReady) {
+			setStartupLooksSlow(false);
+			return;
+		}
+		const timerId = window.setTimeout(() => setStartupLooksSlow(true), 8000);
+		return () => window.clearTimeout(timerId);
+	}, [splashGone, gridReady]);
+
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
 		return sharedWorkspace?.id ?? null;
@@ -6928,11 +7026,41 @@ export function App(): React.JSX.Element {
 		if (typeof window === 'undefined') return;
 		if (authStatus !== 'authed' || splashGone || gridReady) return;
 		if (!authWorkspaceId && sidebarWorkspacesBusy) return;
-		const fallbackDelayMs = hasWarmStartupCache ? 2200 : 4200;
-		const timerId = window.setTimeout(() => {
+		// The hard cap exists so a dead WS, a vanished note doc, or a server that never answers
+		// cannot strand the user on the splash forever. It is NOT meant to be the normal way the
+		// splash goes away — and at 2.2s/4.2s it was exactly that on any slow connection, which is
+		// the bug: it dismissed the splash without checking whether the grid had anything to show,
+		// so the user got an empty grid and a long silent wait while data trickled in.
+		//
+		// Now it is a genuine last resort, and the splash reports progress while it waits, so a
+		// long wait is legible instead of looking broken.
+		//
+		// 30s rather than something longer: if the cap fires, what the user gets is either a grid
+		// of real cards or an honest "Loading your notes…" line, neither of which is a disaster.
+		// A splash that sits there for the best part of a minute, by contrast, just looks broken.
+		// So the cost of firing too early is now low and the cost of firing too late is high —
+		// which is the opposite of the trade-off at 4.2s, when firing early meant an empty grid.
+		//
+		// The short "warm" cap has to be judged against the workspace actually being shown, not
+		// the one the app started in. `hasWarmStartupCache` is computed once, for the startup
+		// workspace — so switching to a workspace this device has never rendered still took the
+		// 2.2s path and dismissed the splash into an empty grid. That is the reported
+		// "switch to Personal, spinner, then an empty notes grid": a warm cap applied to a cold
+		// workspace.
+		const hasWarmCacheForVisibleWorkspace = authWorkspaceId
+			? hasWorkspaceRenderSnapshot(authWorkspaceId)
+			: hasWarmStartupCache;
+		const dismiss = (reason: string, stalledForMs: number) => {
 			void logClientEvent('APP_SPLASH_FALLBACK_DISMISS', {
+				reason,
+				stalledForMs,
 				hasWarmStartupCache,
+				hasWarmCacheForVisibleWorkspace,
 				authWorkspaceId,
+				registrySynced: startupSyncStatus.registrySynced,
+				totalOrdered: startupSyncStatus.totalOrdered,
+				pending: startupSyncStatus.pending,
+				digestShellCount: startupSyncStatus.digestShellCount,
 				sidebarWorkspacesCount: sidebarWorkspaces.length,
 				sidebarWorkspacesBusy,
 				sharedWithMeWorkspaceId,
@@ -6943,9 +7071,34 @@ export function App(): React.JSX.Element {
 			if (splashGoneRef.current) return;
 			clearTimeout(splashTimerRef.current);
 			splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
-		}, fallbackDelayMs);
+		};
+
+		// A warm start has a cached render to fall back on, so a short fixed budget is right: it is
+		// not waiting on a network to have something to show.
+		if (hasWarmCacheForVisibleWorkspace) {
+			const timerId = window.setTimeout(() => dismiss('warm-cache-budget', 2200), 2200);
+			return () => window.clearTimeout(timerId);
+		}
+
+		// A COLD start gets a stall watchdog instead of a budget.
+		//
+		// A fixed cap cannot tell "slow but working" from "stuck", and on a genuinely slow
+		// connection it fired while data was still arriving — dismissing the splash onto an empty
+		// grid, which is the whole bug. So the only thing that ends the wait is real silence:
+		// the clock resets on every forward move (registry sync, note count, pending count,
+		// digest shells), and this gives up only after nothing at all has happened for 20s.
+		//
+		// That is bounded without being a deadline: a slow-but-progressing boot can take as long
+		// as it needs, while a genuinely dead connection still releases in 20s.
+		const STARTUP_STALL_MS = 20000;
+		const timerId = window.setInterval(() => {
+			const stalledForMs = Date.now() - lastStartupProgressAtRef.current;
+			if (stalledForMs < STARTUP_STALL_MS) return;
+			window.clearInterval(timerId);
+			dismiss('no-progress', stalledForMs);
+		}, 1000);
 		return () => {
-			window.clearTimeout(timerId);
+			window.clearInterval(timerId);
 		};
 	}, [
 		activeWorkspaceSystemKind,
@@ -6958,6 +7111,7 @@ export function App(): React.JSX.Element {
 		sidebarWorkspaces.length,
 		sidebarWorkspacesBusy,
 		splashGone,
+		startupSyncStatus,
 	]);
 
 	const loadSidebarWorkspaces = React.useCallback(async (): Promise<void> => {
@@ -8356,7 +8510,13 @@ export function App(): React.JSX.Element {
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(payload),
-				timeoutMs: 8000,
+				// Sign-in is a BLOCKING, user-initiated action with no alternative path, so the
+				// budget should match what a person will actually wait rather than what a
+				// background fetch deserves. At 8s this failed routinely on a degraded connection
+				// — and it is two sequential requests, so the real budget was 8s for a POST that
+				// hashes a password, bootstraps the Shared With Me workspace and runs several
+				// queries, then another 8s for /api/auth/me. 30s matches the splash's own cap.
+				timeoutMs: 30000,
 			});
 
 			if (!res.ok) {
@@ -8396,7 +8556,8 @@ export function App(): React.JSX.Element {
 			try {
 				const meRes = await fetchWithTimeout(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
 					credentials: 'include',
-					timeoutMs: 8000,
+					// Same reasoning as the POST above; see that comment.
+					timeoutMs: 30000,
 				});
 				const contentType = String(meRes.headers.get('content-type') || '').toLowerCase();
 				if (meRes.ok && contentType.includes('application/json')) {
@@ -8491,7 +8652,57 @@ export function App(): React.JSX.Element {
 			// message. "Authentication failed" here was actively misleading: it reads
 			// as "wrong password" to a user who typed their password correctly and just
 			// happened to be on a bad connection.
-			setAuthError(isNetworkUnavailableError(error) ? t('auth.connectionTimeout') : 'Authentication failed');
+			const ownTimeout = isOwnRequestTimeout(error);
+
+			// A timed-out sign-in MAY HAVE SUCCEEDED. The POST sets the session cookie, so if we
+			// gave up while the server finished the job, the session exists and announcing failure
+			// is simply wrong — the user is signed in and being told they are not. That is why
+			// retrying "fixes" it, and why this kept happening on a degraded connection.
+			// So: ask before accusing. One cheap check turns a false failure into a real sign-in.
+			if (ownTimeout) {
+				try {
+					const recheck = await fetchWithTimeout(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
+						credentials: 'include',
+						timeoutMs: 15000,
+					});
+					const recheckType = String(recheck.headers.get('content-type') || '').toLowerCase();
+					if (recheck.ok && recheckType.includes('application/json')) {
+						const recoveredBody = await recheck.json().catch(() => null);
+						const recoveredUserId = recoveredBody?.user?.id ? String(recoveredBody.user.id) : null;
+						if (recoveredUserId && !readAuthTimeoutRecoveryAttempted()) {
+							// The session is real, so RELOAD rather than trying to assemble an
+							// authenticated state here.
+							//
+							// The success path above does considerably more than set a status: user
+							// id, workspace id, profile image, role, the theme prime, plus
+							// manager.setActiveWorkspaceId and setWebsocketEnabled. Setting
+							// authStatus alone would leave the app "signed in" with no workspace and
+							// no sockets — worse than the error it replaced. A reload re-enters the
+							// ordinary cold-boot path with the cookie already in place, which is
+							// exactly the sequence that is known to work, and the splash covers the
+							// wait.
+							//
+							// Guarded to one attempt per tab (sessionStorage, so it dies with the
+							// tab) so a session that reads valid but cannot finish booting can
+							// never become a reload loop.
+							markAuthTimeoutRecoveryAttempted();
+							setAuthError(null);
+							window.location.reload();
+							return;
+						}
+					}
+				} catch {
+					// Still no answer. Fall through and report honestly below.
+				}
+			}
+
+			setAuthError(
+				ownTimeout
+					? t('auth.signInSlow')
+					: isNetworkUnavailableError(error)
+						? t('auth.connectionTimeout')
+						: 'Authentication failed'
+			);
 			setAuthStatus('unauth');
 			setAuthUserRole(null);
 			manager.setWebsocketEnabled(false, 'submitAuth#4');
@@ -8499,6 +8710,16 @@ export function App(): React.JSX.Element {
 			setAuthBusy(false);
 		}
 	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, clearRegistrationInviteFromUrl, deviceId, manager, primeAuthenticatedThemeBeforeWorkspaceLoad, registerAvatarAreaPixels, registerAvatarUrl, registrationInviteToken, showBriefDialog, t]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		if (!authBusy) {
+			setAuthSlowHint(false);
+			return;
+		}
+		const timerId = window.setTimeout(() => setAuthSlowHint(true), 6000);
+		return () => window.clearTimeout(timerId);
+	}, [authBusy]);
 
 	const submitForgotPassword = React.useCallback(async () => {
 		if (forgotPasswordBusy) return;
@@ -8810,8 +9031,13 @@ export function App(): React.JSX.Element {
 					) : null}
 					{authError ? <div className="auth-error">{authError}</div> : null}
 					<button type="submit" disabled={authBusy || authStatus === 'loading'}>
-						{authBusy ? 'Please wait…' : authMode === 'register' ? 'Create account' : 'Sign in'}
+						{authBusy ? t('auth.pleaseWait') : authMode === 'register' ? 'Create account' : 'Sign in'}
 					</button>
+					{authBusy && authSlowHint ? (
+						<div className="auth-slow-hint" role="status" aria-live="polite">
+							{t('auth.signInStillWorking')}
+						</div>
+					) : null}
 					{authMode === 'login' ? (
 						<button
 							type="button"
@@ -11641,12 +11867,29 @@ export function App(): React.JSX.Element {
 		)}
 		{!splashGone && (
 			<div
-				aria-hidden="true"
 				className={`splash-overlay${gridReady ? ' splash-fade-out' : ''}`}
 			>
 				<div className="splash-content">
-					<img className="splash-icon" src={headerIconSrc} alt="" />
-					<div className="splash-spinner" />
+					<img className="splash-icon" src={headerIconSrc} alt="" aria-hidden="true" />
+					<div className="splash-spinner" aria-hidden="true" />
+					{/* Two stages, because a fraction needs a denominator. Until the registry has
+					    synced we genuinely do not know how many notes there are, so stage one says
+					    what is happening without inventing a total; stage two counts them off.
+					    A bare spinner for the whole wait was the complaint. */}
+					{!gridReady ? (
+						<p className="splash-progress" role="status" aria-live="polite">
+							{startupSyncStatus.registrySynced && startupSyncStatus.totalOrdered > 0 && startupSyncStatus.pending > 0
+								? t('app.splashSyncProgress')
+									.replace('{synced}', String(Math.max(0, startupSyncStatus.totalOrdered - startupSyncStatus.pending)))
+									.replace('{total}', String(startupSyncStatus.totalOrdered))
+								: t('grid.loadingNotes')}
+						</p>
+					) : null}
+					{!gridReady && startupLooksSlow ? (
+						<p className="splash-slow" role="status" aria-live="polite">
+							{t('app.splashSlowConnection')}
+						</p>
+					) : null}
 				</div>
 			</div>
 		)}
@@ -12805,9 +13048,18 @@ export function App(): React.JSX.Element {
 								setImportCompletedNotification({ count: pendingImportNoteCount });
 							}
 						}}
-						onSyncProgress={(pending) => {
+						onSyncProgress={(pending, detail) => {
 							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
 								setImportSyncPending(pending);
+							}
+							if (detail) {
+								setStartupSyncStatus({
+									pending,
+									totalOrdered: detail.totalOrdered,
+									registrySynced: detail.registrySynced,
+									digestShellCount: detail.digestShellCount,
+									connectionState: detail.connectionState,
+								});
 							}
 						}}
 				/>

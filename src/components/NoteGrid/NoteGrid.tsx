@@ -91,6 +91,7 @@ import {
 	type WorkspaceRenderSnapshotNote,
 	writeWorkspaceRenderSnapshot,
 } from '../../core/workspaceRenderSnapshot';
+import { digestShellCanRender } from '../../core/noteDigestProjection';
 import { readNoteDigestShellById, subscribeNoteDigestShells } from '../../core/noteDigestStore';
 import styles from './NoteGrid.module.css';
 import {
@@ -254,7 +255,29 @@ export type NoteGridProps = {
 	/** Fires the first time allDocsLoaded becomes true (per mount). */
 	onAllDocsLoaded?: () => void;
 	/** Fires whenever pendingNoteWsSync changes value. */
-	onSyncProgress?: (pendingCount: number) => void;
+	/**
+	 * Fires whenever the number of note rooms still awaiting their first WS sync changes.
+	 *
+	 * `detail` exists so the splash can tell its two stages apart: before the registry has synced
+	 * the note COUNT is unknown, so progress can only be a spinner; after it syncs we know the
+	 * denominator and can show a real fraction.
+	 */
+	onSyncProgress?: (
+		pendingCount: number,
+		detail?: {
+			totalOrdered: number;
+			unresolved: number;
+			registrySynced: boolean;
+			/**
+			 * Server-described shells held for this workspace. The only thing that MOVES before
+			 * the registry has synced, which makes it the one progress signal available during
+			 * the first stage of a cold boot.
+			 */
+			digestShellCount: number;
+			/** Another stage-one heartbeat: the socket moving connecting -> connected is progress. */
+			connectionState: string;
+		}
+	) => void;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -1334,6 +1357,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [viewportLayoutSettled, setViewportLayoutSettled] = React.useState(false);
 	const viewportReadyNotifiedRef = React.useRef(false);
 	const startupDebugSnapshotRef = React.useRef<string>('');
+	/**
+	 * How long the PREVIOUS startup blocker held, measured on the client.
+	 *
+	 * Not derivable from the log's own timestamps: client events are batched on a 400ms flush
+	 * interval and stamped server-side on receipt, so any duration worked out from them is
+	 * quantised to the flush and skewed by the round trip. This is measured where the transition
+	 * actually happens.
+	 *
+	 * It answers the one question a startup report could not: not "what is it waiting for now"
+	 * (the blocker string already said that) but "what did it wait on, and for how long". The
+	 * splash releasing too early on a slow connection turned out to be the 5s stall timeout
+	 * overriding `waiting-registry-ws-sync`, which is invisible in a snapshot that only ever
+	 * shows the CURRENT state.
+	 */
+	const lastBlockerTransitionRef = React.useRef<{ from: string; heldMs: number } | null>(null);
+	const blockerStartedAtRef = React.useRef<{ blocker: string; at: number }>({ blocker: '', at: 0 });
 
 	// ── Shimmer guard: 200 ms grace period after registry WS sync ────────
 	// When registryWsSynced first fires, Yjs note-order data may not have
@@ -1701,7 +1740,13 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		const measuredNoteIds = new Set((workspaceRenderSnapshot?.notes ?? []).map((note) => note.id));
 		const sources = [
 			// Skipping ids the snapshot already covers avoids building a Y.Doc only to throw it away.
-			...Array.from(digestShellById.values()).filter((shell) => !measuredNoteIds.has(shell.id)),
+			// A shell that cannot draw anything is dropped, so the card keeps its shimmer instead
+			// of rendering blank as "Untitled". Any entry in this map suppresses the skeleton
+			// branch in renderGridCard, so an empty shell is strictly worse than no shell at all.
+			// See digestShellCanRender for why metadata alone counts as "renderable" downstream.
+			...Array.from(digestShellById.values()).filter(
+				(shell) => !measuredNoteIds.has(shell.id) && digestShellCanRender(shell)
+			),
 			...(workspaceRenderSnapshot?.notes ?? []),
 		];
 		for (const note of sources) {
@@ -2471,6 +2516,22 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		});
 	}, [docsById, manager, metadataVersion, orderedIds, pinPrefsSnapshot, props.authUserId, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
+	// ── "We do not know what notes exist yet" ────────────────────────────────
+	//
+	// Distinct from "this workspace is empty", and conflating the two is a real bug rather than a
+	// cosmetic one: rendering the empty state here tells the user they have NO NOTES when the
+	// truth is that the registry has not synced. On a throttled connection that lie was on screen
+	// for several seconds, because the splash is force-dismissed by a hard fallback timer in
+	// App.tsx (APP_SPLASH_FALLBACK_DISMISS, 4.2s cold / 2.2s warm) that does not check whether the
+	// grid has anything to show.
+	//
+	// Offline is deliberately excluded: no sync is coming, so "loading" would be a lie that never
+	// resolves, and the empty/offline state is the honest answer there.
+	const isAwaitingFirstNoteOrder = (
+		orderedIds.length === 0
+		&& !connection.registryWsSynced
+		&& connection.state !== 'offline'
+	);
 	const unresolvedOrderedIds = React.useMemo(
 		() => orderedIds.filter((id) => {
 			const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
@@ -3241,7 +3302,18 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		if (shimmerStalled) {
 			initialLoadCompleteRef.current = true;
 			if (!allDocsLoaded) {
-				recordSyncDiagMark('grid-revealed-GAVE-UP', `${unresolvedOrderedIds.length} of ${orderedIds.length} notes still unresolved`);
+				// This used to report ONLY the unresolved count, which is how the real cause hid
+				// for so long: on a slow connection that count is 0 (every note renders fine from
+				// its snapshot) and the line read as though nothing was wrong, while what had
+				// actually held the gate for the full 5s was the registry WS sync below. Name the
+				// condition, not just the symptom.
+				recordSyncDiagMark(
+					'grid-revealed-GAVE-UP',
+					`${unresolvedOrderedIds.length} of ${orderedIds.length} notes unresolved`
+					+ `, registryWsSynced=${connection.registryWsSynced}`
+					+ `, pendingNoteWsSync=${connection.pendingNoteWsSync}`
+					+ `, connection=${connection.state}`
+				);
 				setAllDocsLoaded(true);
 			}
 			return;
@@ -3344,9 +3416,15 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	}, [allDocsLoaded]);
 
 	React.useEffect(() => {
-		props.onSyncProgress?.(connection.pendingNoteWsSync);
+		props.onSyncProgress?.(connection.pendingNoteWsSync, {
+			totalOrdered: orderedIds.length,
+			unresolved: unresolvedOrderedIds.length,
+			registrySynced: connection.registryWsSynced,
+			digestShellCount: digestShellById.size,
+			connectionState: String(connection.state),
+		});
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [connection.pendingNoteWsSync]);
+	}, [connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, digestShellById.size, orderedIds.length, unresolvedOrderedIds.length]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {
@@ -3420,6 +3498,57 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 			window.clearTimeout(timeoutId);
 		};
 	}, [shouldGateViewportBannerAssets, viewportBannerUrls]);
+	/**
+	 * How every card on screen actually resolved, and how many resolved to NOTHING.
+	 *
+	 * Added because "a lot of note cards with no data, no shimmer, just a title of Untitled" could
+	 * not be explained by reading the source, and measuring the digest on a different account
+	 * found zero empty shells — so the cause is still open. Reading this codebase's timing bugs
+	 * from the source has a documented five-for-five failure rate; the two that have been solved
+	 * recently were both solved by a capture.
+	 *
+	 * `blankLive` is the number that matters: a live doc that passed hasRenderableNoteContent()
+	 * (so it rendered as a card, with no shimmer) while having no title, no content, no checklist
+	 * and no drawings. That is exactly the reported symptom, and the predicate allows it, because
+	 * canonical METADATA alone is enough to count as renderable.
+	 *
+	 * Dev/debug only, and capped, so it cannot cost anything in a normal session.
+	 */
+	const cardResolutionCounts = React.useMemo(() => {
+		if (!startupDebugEnabled) return null;
+		let fromLive = 0;
+		let fromShell = 0;
+		let skeleton = 0;
+		let blankLive = 0;
+		let blankShell = 0;
+		for (const noteId of renderedIds.slice(0, 200)) {
+			const liveDoc = docsById[noteId] ?? manager.peekDoc(noteId) ?? null;
+			const liveRenderable = Boolean(liveDoc && hasRenderableNoteContent(liveDoc));
+			if (liveRenderable && liveDoc) {
+				fromLive += 1;
+				const empty = liveDoc.getText('title').length === 0
+					&& liveDoc.getText('content').length === 0
+					&& liveDoc.getXmlFragment('contentRich').length === 0
+					&& liveDoc.getArray('checklist').length === 0
+					&& liveDoc.getArray('drawingIds').length === 0;
+				if (empty) blankLive += 1;
+				continue;
+			}
+			const shellDoc = snapshotDocById.get(noteId) ?? null;
+			if (shellDoc) {
+				fromShell += 1;
+				const empty = shellDoc.getText('title').length === 0
+					&& shellDoc.getText('content').length === 0
+					&& shellDoc.getXmlFragment('contentRich').length === 0
+					&& shellDoc.getArray('checklist').length === 0
+					&& shellDoc.getArray('drawingIds').length === 0;
+				if (empty) blankShell += 1;
+				continue;
+			}
+			skeleton += 1;
+		}
+		return { fromLive, fromShell, skeleton, blankLive, blankShell };
+	}, [docsById, manager, renderedIds, snapshotDocById, startupDebugEnabled]);
 	const measuredRenderedCardCount = React.useMemo(
 		() => renderedIds.reduce((count, id) => count + (noteHeightByIdRef.current.has(id) ? 1 : 0), 0),
 		[noteHeightsVersion, renderedIds]
@@ -3449,9 +3578,23 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 								? 'waiting-card-measurements'
 								: 'waiting-layout-quiescence'
 						: 'ready';
+		// Only updated when the blocker actually changes, so it stays stable between
+		// transitions and cannot churn the dedupe below.
+		const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+		if (blockerStartedAtRef.current.blocker !== blocker) {
+			if (blockerStartedAtRef.current.blocker) {
+				lastBlockerTransitionRef.current = {
+					from: blockerStartedAtRef.current.blocker,
+					heldMs: Math.round(nowMs - blockerStartedAtRef.current.at),
+				};
+			}
+			blockerStartedAtRef.current = { blocker, at: nowMs };
+		}
 		const snapshot = JSON.stringify({
 			workspaceId: props.activeWorkspaceId ?? null,
 			blocker,
+			previousBlocker: lastBlockerTransitionRef.current?.from ?? null,
+			previousBlockerHeldMs: lastBlockerTransitionRef.current?.heldMs ?? null,
 			noteOrderReady: Boolean(noteOrder),
 			orderedCount: orderedIds.length,
 			visibleCount: visibleIds.length,
@@ -3470,6 +3613,15 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 			connectionState: connection.state,
 			measuredRenderedCardCount,
 			measuredLayoutTargetCount,
+			// How the cards on screen resolved. blankLive > 0 means a card rendered from a live
+			// doc that had canonical metadata but nothing to show - the "Untitled, no shimmer"
+			// symptom.
+			cardsFromLive: cardResolutionCounts?.fromLive ?? null,
+			cardsFromShell: cardResolutionCounts?.fromShell ?? null,
+			cardsAsSkeleton: cardResolutionCounts?.skeleton ?? null,
+			cardsBlankFromLive: cardResolutionCounts?.blankLive ?? null,
+			cardsBlankFromShell: cardResolutionCounts?.blankShell ?? null,
+			digestShellCount: digestShellById.size,
 			noteHeightsVersion,
 			viewMode: props.viewMode,
 			isGridVisible,
@@ -3478,7 +3630,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		startupDebugSnapshotRef.current = snapshot;
 		const parsedSnapshot = JSON.parse(snapshot);
 		void logClientEvent('NOTE_GRID_STARTUP', parsedSnapshot);
-	}, [allDocsLoaded, connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, docsById, initialDataSettled, initialLayoutSettled, isGridVisible, layoutMeasurementTargetIds.length, layoutReady, manager, measuredLayoutTargetCount, measuredRenderedCardCount, noteHeightsVersion, noteOrder, orderedIds, props.activeWorkspaceId, props.enableLayoutAnimations, props.viewMode, renderedIds, shimmerStalled, startupDebugEnabled, visibleIds, wsSyncJustFired]);
+	}, [cardResolutionCounts, digestShellById, allDocsLoaded, connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, docsById, initialDataSettled, initialLayoutSettled, isGridVisible, layoutMeasurementTargetIds.length, layoutReady, manager, measuredLayoutTargetCount, measuredRenderedCardCount, noteHeightsVersion, noteOrder, orderedIds, props.activeWorkspaceId, props.enableLayoutAnimations, props.viewMode, renderedIds, shimmerStalled, startupDebugEnabled, visibleIds, wsSyncJustFired]);
 	React.useEffect(() => {
 		return () => {
 			if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
@@ -3620,6 +3772,20 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		}
 		if (!initialDataSettled) return;
 		if (!initialLayoutSettled) return;
+		// Never report "ready" while we do not yet know what notes exist.
+		//
+		// Both ready callbacks dismiss the splash, and both are driven by LAYOUT settling — which
+		// settles perfectly happily when there is nothing to lay out. So a cold boot whose registry
+		// has not synced reported ready with zero notes, the splash went away, and the user landed
+		// on an empty grid reading "Loading notes…" with no progress and no spinner. This is the
+		// same condition that renders that message, deliberately: if the grid would say it is
+		// loading, the splash must not have gone.
+		//
+		// It has to gate the FIRING rather than the handler, because both are one-shot via refs —
+		// refusing inside the handler would mean they never fire at all. isAwaitingFirstNoteOrder
+		// is therefore a dependency, so the effect re-runs and fires the moment it clears.
+		if (isAwaitingFirstNoteOrder) return;
+
 		if (readyNotifiedRef.current) return;
 		if (startupDebugEnabled) {
 			const readySnapshot = {
@@ -3640,17 +3806,21 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		}
 		readyNotifiedRef.current = true;
 		props.onReady?.();
-	}, [allDocsLoaded, connection.registryWsSynced, connection.state, initialDataSettled, initialLayoutSettled, layoutReady, measuredRenderedCardCount, noteHeightsVersion, orderedIds.length, props.activeWorkspaceId, props.onReady, renderedIds.length, startupDebugEnabled, visibleIds.length]);
+	}, [allDocsLoaded, connection.registryWsSynced, connection.state, initialDataSettled, initialLayoutSettled, isAwaitingFirstNoteOrder, layoutReady, measuredRenderedCardCount, noteHeightsVersion, orderedIds.length, props.activeWorkspaceId, props.onReady, renderedIds.length, startupDebugEnabled, visibleIds.length]);
 
 	// ── onViewportReady — fires as soon as viewport-visible layout is stable ──
 	// Fires before onReady on large workspaces. Drives splash dismissal so the
 	// overlay is never on screen longer than needed.
 	React.useEffect(() => {
 		if (!viewportLayoutSettled) return;
+		// Same guard as onReady above, and for the same reason — see that comment. This path is
+		// the one that actually bit: viewportLayoutSettled short-circuits to TRUE for list and
+		// strip views, and whenever the grid is not visible, so it can settle with no notes at all.
+		if (isAwaitingFirstNoteOrder) return;
 		if (viewportReadyNotifiedRef.current) return;
 		viewportReadyNotifiedRef.current = true;
 		props.onViewportReady?.();
-	}, [viewportLayoutSettled, props.onViewportReady]);
+	}, [viewportLayoutSettled, isAwaitingFirstNoteOrder, props.onViewportReady]);
 
 	const groupedSections = React.useMemo<NoteGridSection[]>(() => {
 		return buildNoteGroupSections({
@@ -4969,8 +5139,16 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 			}}
 		>
 			{visibleIds.length === 0 ? (
-				<div className={styles.emptyState} role="status">
-					{props.emptyStateLabel || t('search.noResults')}
+				// "Loading" and "you have no notes" are different facts and must not share a
+				// message. Placeholder CARDS used to go here; they were removed deliberately,
+				// because the splash now holds until the grid has something real to show, so a
+				// visible-but-empty grid is only reachable if the splash's hard cap fired on a
+				// genuinely broken connection. A one-line status is the honest thing for that
+				// case — a gridful of fake cards that never resolve would be worse.
+				<div className={styles.emptyState} role="status" aria-busy={isAwaitingFirstNoteOrder || undefined}>
+					{isAwaitingFirstNoteOrder
+						? t('grid.loadingNotes')
+						: (props.emptyStateLabel || t('search.noResults'))}
 				</div>
 			) : null}
 			{(props.viewMode === 'list' || props.viewMode === 'strip') && visibleIds.length > 0 ? (
