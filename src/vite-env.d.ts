@@ -11,12 +11,6 @@ declare const __IS_DEV_BUILD__: boolean;
 
 interface ImportMetaEnv {
 	/**
-	 * Note card loading effect.
-	 * "0" or unset → simple CSS shimmer (default)
-	 * "1"           → HL2 Combine electric-fence crackle SVG overlay
-	 */
-	readonly VITE_NOTE_CARD_EFFECT?: string;
-	/**
 	 * Force windowed grid virtualization on with just a handful of notes. Production
 	 * only virtualizes a column once it crosses ~18-20 notes, so a small dev dataset
 	 * never exercises that whole subsystem — which is exactly where the "cards

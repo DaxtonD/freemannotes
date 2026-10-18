@@ -42,6 +42,7 @@ const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const {
 	digestEntryToSnapshotNote,
+	digestShellCanRender,
 	mergeDigestShells,
 } = require('../src/core/noteDigestProjection.ts');
 const {
@@ -359,5 +360,90 @@ describe('the shell store', () => {
 		assert.equal(store.size, 0);
 		assert.deepEqual(mergeNoteDigestEntries('', [digestEntry()]), { added: 0, updated: 0 });
 		assert.equal(store.size, 0);
+	});
+});
+
+describe('can a shell actually draw something', () => {
+	// This gate is what makes the shimmer trustworthy. A shell always gets all ten canonical
+	// metadata keys from createSnapshotDocFromWorkspaceRenderSnapshot, so NoteGrid's
+	// hasRenderableNoteContent() calls ANY shell renderable — even an empty one, which then
+	// renders blank as "Untitled" AND suppresses the shimmer, i.e. worse than no shell at all.
+	const shell = (overrides) => ({ ...digestEntryToSnapshotNote(digestEntry()), ...overrides });
+
+	it('says no to a shell with nothing on it', () => {
+		assert.equal(digestShellCanRender(shell({ title: '', content: '', checklistItems: [] })), false);
+	});
+
+	it('says no when the only content is whitespace', () => {
+		assert.equal(digestShellCanRender(shell({ title: '   ', content: '\n\t ', checklistItems: [] })), false);
+	});
+
+	it('says yes for a title alone — that is a real card', () => {
+		assert.equal(digestShellCanRender(shell({ title: 'Groceries', content: '', checklistItems: [] })), true);
+	});
+
+	it('says yes for body text alone, for checklist rows, and for attached drawings', () => {
+		assert.equal(digestShellCanRender(shell({ title: '', content: 'milk' })), true);
+		assert.equal(digestShellCanRender(shell({
+			title: '', content: '', checklistItems: [{ id: 'a', text: 'milk', completed: false }],
+		})), true);
+		assert.equal(digestShellCanRender(shell({
+			title: '', content: '', checklistItems: [], drawingIds: ['d1'],
+		})), true);
+	});
+
+	it('says yes when the only content is a URL preview', () => {
+		// Worth its own case: the link row carries real height, so a shell with nothing but a
+		// preview is still better than a skeleton.
+		const withLink = digestEntryToSnapshotNote(digestEntry({
+			title: '', contentPreview: '', previewLinkUrls: ['https://example.com/a'],
+		}));
+		assert.equal(withLink.previewLinks.length, 1);
+		assert.equal(digestShellCanRender(withLink), true);
+	});
+
+	it('ALWAYS says no to a drawing, however much metadata it carries', () => {
+		// A drawing note's body is its Excalidraw scene, which is never in the digest.
+		assert.equal(digestShellCanRender(shell({ type: 'drawing', title: 'My sketch' })), false);
+		assert.equal(digestShellCanRender(shell({ type: 'drawing', title: 'x', drawingIds: ['d1'] })), false);
+	});
+});
+
+describe('URL preview links', () => {
+	it('carries preview links through so a card does not grow when the live doc lands', () => {
+		// The digest omitted these, which made every note with a preview a guaranteed height
+		// change — measured as absent from the real endpoint, and reported as "URL previews were
+		// added to note cards already visible".
+		const shell = digestEntryToSnapshotNote(digestEntry({
+			previewLinkUrls: ['https://example.com/one', 'https://example.org/two'],
+		}));
+		assert.equal(shell.previewLinks.length, 2);
+		assert.equal(shell.previewLinks[0].url, 'https://example.com/one');
+		assert.equal(shell.previewLinks[0].hostname, 'example.com');
+		assert.equal(shell.previewLinks[0].sortOrder, 0);
+		assert.equal(shell.previewLinks[1].sortOrder, 1, 'sortOrder comes from position');
+		// The link COUNT feeds the attachment chip, so it has to agree.
+		assert.equal(shell.attachmentCounts.links, 2);
+	});
+
+	it('drops unusable urls rather than producing broken link rows', () => {
+		const shell = digestEntryToSnapshotNote(digestEntry({
+			previewLinkUrls: ['not a url', '', 'https://example.com/ok', null, 42],
+		}));
+		assert.equal(shell.previewLinks.length, 1);
+		assert.equal(shell.previewLinks[0].hostname, 'example.com');
+	});
+
+	it('is empty, not undefined, when the server sends nothing', () => {
+		const shell = digestEntryToSnapshotNote(digestEntry());
+		assert.deepEqual(shell.previewLinks, []);
+		assert.equal(shell.attachmentCounts.links, 0);
+	});
+
+	it('leaves previewCards empty — the digest cannot know them', () => {
+		// Link preview CARDS (title/image/description) are a server-side fetch cached per device,
+		// not part of the note document.
+		const shell = digestEntryToSnapshotNote(digestEntry({ previewLinkUrls: ['https://example.com/a'] }));
+		assert.deepEqual(shell.previewCards, []);
 	});
 });

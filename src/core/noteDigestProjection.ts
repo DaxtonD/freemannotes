@@ -19,6 +19,9 @@
  *    `workspaceRenderSnapshot`. Keep the imports here type-only and the tests keep working.
  */
 
+// noteLinks only imports yjs, so it loads under plain Node and does not break the
+// type-only-imports rule this module relies on (checked, not assumed).
+import { normalizeUrlCandidate, type ExtractedNoteLink } from './noteLinks';
 import type {
 	WorkspaceRenderSnapshotChecklistItem,
 	WorkspaceRenderSnapshotNote,
@@ -43,7 +46,20 @@ export type NoteDigestEntry = {
 	trashed: boolean;
 	archived: boolean;
 	serverUpdatedAt: string | null;
+	/** Raw URL strings from the note's `urlPreviewLinks` metadata field. */
+	previewLinkUrls?: string[];
 };
+
+function toPreviewLinks(entry: NoteDigestEntry): ExtractedNoteLink[] {
+	const urls = Array.isArray(entry.previewLinkUrls) ? entry.previewLinkUrls : [];
+	const links: ExtractedNoteLink[] = [];
+	for (const url of urls) {
+		const link = normalizeUrlCandidate(url);
+		// sortOrder has to come from position here; normalizeUrlCandidate cannot know it.
+		if (link) links.push({ ...link, sortOrder: links.length });
+	}
+	return links;
+}
 
 function toChecklistItems(entry: NoteDigestEntry): WorkspaceRenderSnapshotChecklistItem[] {
 	const items = Array.isArray(entry.checklistItems) ? entry.checklistItems : [];
@@ -77,6 +93,7 @@ function toChecklistItems(entry: NoteDigestEntry): WorkspaceRenderSnapshotCheckl
 export function digestEntryToSnapshotNote(entry: NoteDigestEntry): WorkspaceRenderSnapshotNote {
 	const type = entry.type === 'checklist' ? 'checklist' : entry.type === 'drawing' ? 'drawing' : 'text';
 	const drawingIds = Array.isArray(entry.drawingIds) ? [...entry.drawingIds] : [];
+	const previewLinks = toPreviewLinks(entry);
 	return {
 		id: entry.id,
 		type,
@@ -99,10 +116,37 @@ export function digestEntryToSnapshotNote(entry: NoteDigestEntry): WorkspaceRend
 		bannerFile: entry.bannerFile ?? null,
 		hasSharedBannerPreference: false,
 		collaboratorCount: 0,
-		attachmentCounts: { images: 0, links: 0, drawings: drawingIds.length, documents: 0 },
-		previewLinks: [],
+		attachmentCounts: { images: 0, links: previewLinks.length, drawings: drawingIds.length, documents: 0 },
+		previewLinks,
+		// The link PREVIEW CARD (title, image, description) is a server-side fetch cached per
+		// device, not part of the note document, so the digest cannot supply it. The link row
+		// itself is what carries most of the height.
 		previewCards: [],
 	};
+}
+
+/**
+ * Can this shell actually draw something?
+ *
+ * **A shell that answers no must not suppress the card shimmer.** This is the rule that makes the
+ * shimmer trustworthy, and it exists because of how a shell becomes a card:
+ * `createSnapshotDocFromWorkspaceRenderSnapshot` unconditionally writes all ten canonical
+ * metadata keys, so `hasRenderableNoteContent` in NoteGrid answers "renderable" for ANY shell -
+ * including one carrying no title, no content and no checklist. Such a card renders blank, titled
+ * "Untitled", and because a shell existed it never got a shimmer either. Worse than the skeleton
+ * it replaced.
+ *
+ * A drawing always answers no: its card body IS its Excalidraw scene, which lives in that note's
+ * own doc and is never part of the digest.
+ */
+export function digestShellCanRender(shell: WorkspaceRenderSnapshotNote): boolean {
+	if (shell.type === 'drawing') return false;
+	if (String(shell.title ?? '').trim().length > 0) return true;
+	if (String(shell.content ?? '').trim().length > 0) return true;
+	if (shell.checklistItems.length > 0) return true;
+	if (shell.drawingIds.length > 0) return true;
+	if (shell.previewLinks.length > 0) return true;
+	return false;
 }
 
 export type DigestShellMerge = {

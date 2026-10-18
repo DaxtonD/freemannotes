@@ -405,10 +405,24 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				drawingIds = [];
 			}
 
+			// URL preview links live in a METADATA field, so they are cheap to project - and
+			// leaving them out was a guaranteed height change: a card with previews rendered
+			// without them from its shell, then grew the moment the live doc arrived. Measured
+			// as missing against the real endpoint, and reported by the user as "URL previews
+			// were added to note cards already visible".
+			let previewLinkUrls = [];
+			try {
+				const raw = metadata.get('urlPreviewLinks');
+				if (Array.isArray(raw)) previewLinkUrls = raw.filter((url) => typeof url === 'string');
+			} catch {
+				previewLinkUrls = [];
+			}
+
 			return {
 				id: noteId,
 				type,
 				title: doc.getText('title').toString(),
+				previewLinkUrls,
 				// A hint for height estimation, not the note. Truncated on purpose.
 				contentPreview: contentSource.slice(0, DIGEST_CONTENT_PREVIEW_CHARS),
 				contentLength: contentSource.length,
