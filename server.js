@@ -188,11 +188,22 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 							// IDB state from the reconnecting client, so the connection's userId IS
 							// the author of those changes. Without this, actorId stays null and
 							// activities created during _syncEntityReferences have no actor.
-							if (userId) persistAdapter?.recordDocUpdate(docName, userId);
+							if (userId) {
+								persistAdapter?.recordDocUpdate(docName, userId);
+								// Offline sync-back: SyncStep2 carries everything this client wrote
+								// while away, so it is a real change by a real author and the grid
+								// needs to know who.
+								noteChangeNotifier?.recordChange(docName, userId);
+							}
 						}
 					} else if (syncMessageType === syncProtocol.messageYjsUpdate) {
 						syncProtocol.readUpdate(decoder, doc, conn);
-						if (userId) persistAdapter?.recordDocUpdate(docName, userId);
+						if (userId) {
+							persistAdapter?.recordDocUpdate(docName, userId);
+							// Fires per keystroke. recordChange coalesces per room - see
+							// server/noteChangeEvents.js, where the debouncing is the whole point.
+							noteChangeNotifier?.recordChange(docName, userId);
+						}
 					}
 					if (encoding.length(encoder) > 1) {
 						sendRoleAware(doc, conn, encoding.toUint8Array(encoder));
@@ -283,6 +294,14 @@ let persistAdapter = null;
 
 /** @type {ReturnType<import('./server/apiRouter').createApiRouter> | null} */
 let apiRouter = null;
+/**
+ * Turns "an authenticated socket wrote to room R" into something clients can act on.
+ *
+ * Assigned during startup, read from the Yjs websocket handler above it - hence a module-level
+ * handle rather than a parameter. Null until persistence is up, and the handler is written to cope
+ * with that, because a change nobody can be told about is not worth failing a write over.
+ */
+let noteChangeNotifier = null;
 
 /** @type {ReturnType<import('./server/authRouter').createApiAuthRouter> | null} */
 let authRouter = null;
@@ -502,6 +521,26 @@ if (DATABASE_URL.length > 0) {
 		if (persistAdapter) {
 			try {
 				const { createApiRouter } = require('./server/apiRouter');
+				// Same emit path as onWorkspaceMetadataChanged below: broadcast locally, then publish
+				// to Redis for the other instances when Redis is present. Redis is optional, so the
+				// local broadcast cannot be conditional on it.
+				const { createNoteChangeNotifier } = require('./server/noteChangeEvents');
+				noteChangeNotifier = createNoteChangeNotifier({
+					prisma,
+					emit: (event) => {
+						const normalized = normalizeWorkspaceMetadataEvent({
+							...event,
+							type: 'workspace-metadata-changed',
+							origin: SERVER_INSTANCE_ID,
+						});
+						if (!normalized) return;
+						broadcastWorkspaceMetadataChanged(normalized);
+						if (redis) {
+							void publishWorkspaceMetadataEvent(redis, normalized).catch(() => undefined);
+						}
+					},
+				});
+
 				apiRouter = createApiRouter({
 					prisma,
 					adapter: persistAdapter,
