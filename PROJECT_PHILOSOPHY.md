@@ -184,6 +184,39 @@ The system should avoid creating invisible or ambiguous states.
 
 ---
 
+### The Interface Must Not Move Under the User
+
+This is the principle the most design effort has gone into, so it is stated plainly.
+
+A note's position on the grid is how people find it. Position is memory. Anything that rearranges
+the grid while somebody is reading it destroys that memory and costs them their place.
+
+Arriving data is not a reason to rearrange what somebody is looking at.
+
+There are three ways it happens, and they are one problem, not three:
+
+* A note is **added** and everything below it is pushed down.
+* A note is **removed** and the gap closes up.
+* A note is **edited** and the card changes height where it sits.
+
+So a change made by somebody else is **held, not applied**. It is announced, counted, and applied
+at a moment the user chose. The user's own changes are never held: being asked to approve your own
+typing is absurd, and a note created on the device in front of you must appear instantly.
+
+Two things follow, and both have been learned the expensive way:
+
+**A card's height is a function of its content.** "Hold the height but show the new content" is a
+contradiction, and it yields either empty space or controls pushed off the card. There is no third
+outcome. Freezing the card's content instead turns it into a stale snapshot, which has to disable
+editing to stay honest. Both were tried and both were reverted. Hold the *change*, never the
+*card*.
+
+**Announcing a change must cost less than the change itself.** A marker that re-measures, re-packs
+or animates size feeds the layout loop it was meant to protect. Treatments are drawn over the card,
+out of layout, participating in nothing.
+
+---
+
 ### Collaboration Without Compromise
 
 Collaboration is important, but single-user workflows should never suffer because of collaboration requirements.

@@ -117,6 +117,7 @@ function buildWelcomeContentEn(fragment) {
 		'📌 Collapsible Headings',
 		'💬 @Mentions & Inbox',
 		'🤝 Sharing & Collaboration',
+		'🔄 Changes From Other People',
 		'🫧 Bubble View',
 		'⏰ Reminders',
 		'🎨 Customization',
@@ -195,6 +196,13 @@ function buildWelcomeContentEn(fragment) {
 		para(t('Any note can be shared with either View or Edit permissions, and editing is real-time across however many devices are in the note at once. Shared notes can be placed in your personal workspace, a "Shared with me" section, or organized into separate folders within it.')),
 		hr(),
 
+		h2Collapsible('🔄 Changes From Other People'),
+		para(t('This is the thing that bugged me most about every other notes app. You are reading your grid, somebody else edits a note, and everything jumps. A note gets added and the whole page shoves down. One gets deleted and the gap snaps shut. Somebody adds two lines and the card grows while your eyes are on it. You lose your place every single time.')),
+		para(t('So changes other people make are held rather than applied under you. A small chip appears next to the workspace name with a count on it — tap it for the breakdown and an Apply changes button. The grid rearranges when you say so, not while you are mid-sentence.')),
+		para(t('Notes that were edited rather than added or removed stay completely live and correct, because the new content is already there and there is nothing to withhold. Those cards get a shaded gradient and a chip or two showing who changed it and how long ago. Open the note and the chip clears itself — you have seen it.')),
+		para(t('Your own work is never held back. Anything you create, edit or delete on the device in front of you lands instantly, because being asked to approve your own typing would be ridiculous.')),
+		hr(),
+
 		h2Collapsible('🫧 Bubble View'),
 		para(t('This one\'s a bit different. Instead of a list, your notes float around as bubbles sized by how recent and active they are. The ones you\'re actually using drift toward the top. There\'s a zoom slider if you want more or less detail at a glance, and tapping a bubble opens the note like normal.')),
 		hr(),
@@ -233,6 +241,7 @@ function buildWelcomeContentEs(fragment) {
 		'📌 Encabezados contraíbles',
 		'💬 @Menciones e Inbox',
 		'🤝 Compartir y colaborar',
+		'🔄 Cambios de otras personas',
 		'🫧 Vista de burbujas',
 		'⏰ Recordatorios',
 		'🎨 Personalización',
@@ -309,6 +318,13 @@ function buildWelcomeContentEs(fragment) {
 
 		h2Collapsible('🤝 Compartir y colaborar'),
 		para(t('Cualquier nota se puede compartir con permisos de Vista o Edición, y la edición es en tiempo real en cuantos dispositivos haya en la nota a la vez. Las notas compartidas se pueden poner en tu espacio de trabajo personal, en una sección "Compartido conmigo", o organizarlas en carpetas separadas dentro de esa sección.')),
+		hr(),
+
+		h2Collapsible('🔄 Cambios de otras personas'),
+		para(t('Esto es lo que más me molestaba de cualquier otra app de notas. Estás leyendo tu cuadrícula, otra persona edita una nota, y todo salta. Se añade una nota y la página entera se empuja hacia abajo. Se borra una y el hueco se cierra de golpe. Alguien añade dos líneas y la tarjeta crece mientras la estás mirando. Pierdes tu sitio cada vez.')),
+		para(t('Así que los cambios de otras personas se retienen en lugar de aplicarse por debajo de ti. Aparece un pequeño chip junto al nombre del espacio de trabajo con un contador — tócalo para ver el desglose y un botón de Aplicar cambios. La cuadrícula se reorganiza cuando tú lo dices, no mientras estás a medio escribir.')),
+		para(t('Las notas que fueron editadas, en lugar de añadidas o eliminadas, siguen completamente vivas y correctas, porque el contenido nuevo ya está ahí y no hay nada que retener. Esas tarjetas reciben un degradado sombreado y uno o dos chips que muestran quién la cambió y hace cuánto. Abre la nota y el chip se borra solo.')),
+		para(t('Tu propio trabajo nunca se retiene. Todo lo que crees, edites o elimines en el dispositivo que tienes delante aparece al instante, porque pedirte que apruebes tu propia escritura sería absurdo.')),
 		hr(),
 
 		h2Collapsible('🫧 Vista de burbujas'),

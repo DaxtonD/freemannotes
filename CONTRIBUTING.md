@@ -33,6 +33,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
 - [Notifications, the Inbox and the Bell](#notifications-the-inbox-and-the-bell)
 - [Custom Drawing Libraries](#custom-drawing-libraries)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
+- [Changes From Other People Are Held, Not Applied](#changes-from-other-people-are-held-not-applied)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
   - [Architecture overview](#architecture-overview)
@@ -1285,7 +1286,7 @@ Those two legitimately differ — an offline workspace switch that has not synce
 pointing elsewhere — and it is what made the first note-digest response return a different
 workspace's notes. A cleanup tool scanning the wrong workspace would be worse than useless.
 
-## The Note Digest (`GET /api/note-digest`) — Groundwork, Nothing Reads It Yet
+## The Note Digest (`GET /api/note-digest`) — Read by the Grid
 
 Describes a note's card shape (type, title, content preview, checklist items, counts, banner,
 `drawingIds`, flags, timestamps) by projecting the stored Yjs blob **on demand**. The point is a
@@ -1373,20 +1374,151 @@ Rendering last-seen content turns the card into a **stale snapshot**, and that c
   heights" in CLAUDE.md — that broke virtualization and drag in 1.11.1. Clamping is acceptable
   because the element genuinely IS that tall; lying about the measurement is not.
 
-### If there is an attempt three
+### There is no attempt three — the goal was met a different way
 
-**Do the server-side note digest first** (step 3 of the sync-delivery plan). Every version of this
-failed while trying to infer what a card *should* look like from data the client happens to hold.
-With a digest the correct size and shape of a card is known rather than guessed, which removes the
-need for a parallel "last-seen" rendering mode — the thing that generated most of the damage.
+**Holding card height was abandoned for good, and so was the snapshot/freeze variant.** Do not
+rebuild either. Two reasons, and the second is the one that matters:
 
-**Attempt B is the fallback if the feature is wanted before the digest.** It worked, the user
-confirmed it, and its only objection was aesthetic. It keeps one source of truth per card and
-touches far less: no stale rendering, no second persisted store, no local/remote event plumbing,
-no disabled interactions.
+- A card's height is a function of its content, so holding it while the content changes gives
+  either empty space or controls pushed off the card. **There is no third outcome.**
+- It only ever addressed ONE of the three symptoms. Insertion and removal reflow the grid however
+  the heights behave, so even a perfect hold would have left two thirds of the complaint standing.
 
-**Do not start from attempt C.** It looks like the best answer and it is the most expensive one.
+What replaced it is **the pending-change set** — see "Changes From Other People Are Held, Not
+Applied" below. It treats all three symptoms as one problem, which is what the height work could
+not do.
 
+This section is kept because the post-mortem is still worth reading: the traps above (`updatedAt`
+moving on every keystroke, a local edit not being news, marking seen on close as well as open,
+never withholding a real measurement) are all live, and they bite anything that touches card
+rendering.
+
+
+## Changes From Other People Are Held, Not Applied
+
+**The governing principle is "The Interface Must Not Move Under the User" in
+`PROJECT_PHILOSOPHY.md`. Read that first; this is how it is implemented.**
+
+A note's position on the grid is how people find it, so rearranging the grid while somebody is
+reading it costs them their place. Three symptoms, one problem: a note **added** pushes everything
+below it down, a note **removed** closes the gap up, a note **edited** changes height where it
+sits. More design time has gone into this than into any other part of the app, and two earlier
+answers were built and reverted before this one.
+
+### The shape of it
+
+- `src/core/pendingNoteChanges.ts` — the rules, and **deliberately pure**: no imports, no clock,
+  no side effects. `at` and `authUserId` are passed in. All the behaviour is in the precedence
+  table and the edge cases, so it has to be testable in plain Node
+  (`tests/pending-note-changes.test.js`).
+- `src/core/noteChangeChips.ts` — contributors to drawable chips. Also pure.
+- `src/core/pendingNoteChangeStore.ts` — localStorage persistence, per user **and** per workspace.
+- `src/components/NoteCard/NoteChangeOverlay.tsx` — the treatment, shared by grid cards and
+  list/strip rows.
+- `server/noteChangeEvents.js` — attribution: who changed a note, coalesced per room.
+
+### The rules that are load-bearing
+
+**Your own change is never pending.** A note you made on the device in front of you must appear
+instantly. This is also the subtlest part of the whole mechanism, because of an ordering problem
+worth stating outright: the note list is a local Yjs array, so **your own write fires the observer
+immediately**, while attribution rides on a `/ws/metadata` event that is **debounced 10 seconds**.
+So at the moment a local change is seen there is never an attribution for it. Creating a note was
+therefore held back from the person who created it — and so was deleting one.
+
+The fix is `resolveNoteListChangeAuthor`: **a local Yjs transaction is by definition this client's
+own work.** Yjs sets `transaction.local` false for anything applied from a remote update or loaded
+out of IndexedDB, so the observer can tell the two apart without waiting for the server to agree.
+If you touch this path, keep that check.
+
+**An unattributed change counts as somebody else's.** Deliberate, not an oversight: attribution
+rides on a live socket event, so a change that arrived while the tab was disconnected has none.
+Deferring is the less intrusive mistake — it shows a prompt that may have been unnecessary, where
+the alternative rearranges the grid under somebody's hands.
+
+**A registry event is a trigger, not a description.** Measured, not assumed: `note-order-changed`
+events arrive for reasons that have nothing to do with notes being added or removed, including for
+a *different* workspace's registry. Diff the note list and let the event supply only the
+attribution. Reacting to the event directly reports changes that did not happen.
+
+**One coalesced event can name several people.** The server debounces a room's changes for 10s
+(60s ceiling), so two people editing the same note near each other produce ONE event. It carries
+`changedUserIds` — all of them, most recent first — and the client folds every one into a
+contributor list. Reporting only the last writer throws away information nothing downstream can
+recover, which is exactly what it did until it was measured.
+
+**Edited attribution survives a reload; withholding does not.** For an added or removed note,
+flushing on reload is right: a reload lays the grid out from scratch, so there is no shift to
+prevent, and withholding a new note across reloads would hide it forever. An edited note's change
+is *already applied*, so its pending entry carries nothing but the attribution — and that is the
+one thing that cannot be reconstructed. Hence `pendingNoteChangeStore.ts` persists the edited
+entries only.
+
+### Rules for the treatment on a card
+
+**Nothing you add may participate in layout.** A card's height is measured by a ResizeObserver and
+fed straight to the masonry packer, so anything that joins the card's flex flow changes layout —
+the subsystem behind the oscillation bug, the 1.11.1 drag regression and both reverted card-hold
+attempts. The overlay is `position: absolute; inset: 0`, tracks the card's size for free and
+contributes nothing.
+
+**`pointer-events: none`, all of it.** The card underneath stays fully interactive. Opening the
+note is what clears its chip, so the overlay has nothing to handle.
+
+**Do not switch cards to `layout` (size + position).** `layout='position'` is deliberate: animating
+size injects intermediate heights into the layout loop.
+
+**Capacity must not be a function of card height.** The chips are a fixed three plus an overflow
+count, which makes the count a constant. A height-derived capacity would change the chip count on
+every resize — churn, inside the one subsystem this is all trying to protect.
+
+**Take colours from the surface, never hard-code them.** The veil is `color-mix`ed from the card's
+own TEXT colour (`--note-color-text`, falling back to `--list-row-text` on a list row). A black
+wash was the first attempt and it only worked on light cards: on a dark theme, or on any of the
+darker note colour tokens, darkening something already dark is invisible. Deriving from the text
+colour means the veil contrasts with the card by construction, in every theme and on every token,
+with no per-theme rules. The same reasoning applies to the chips, which carry the card's own
+background so their contrast is a property of the chip rather than of whatever theme is active.
+
+**The scrim and the signal are separate elements.** The veil is for legibility; the "this changed"
+signal is an accent border on the card. One element cannot do both, because a veil that is light
+on a dark card and dark on a light card carries no consistent meaning on its own.
+
+### Things to check if you change the wire format
+
+The `/ws/metadata` payload is built by `toClientMetadataPayload` in
+`server/workspaceMetadataEvents.js`, beside the normaliser that defines the shape, and asserted by
+`tests/workspace-metadata-wire.test.js`. **It lives there for a reason.** It used to be an inline
+object literal in `server.js`'s broadcast function, forty lines from the normaliser, so adding a
+field to the event shape left the wire silently behind: the server computed the full list of people
+who changed a note and discarded all but one on the last line before the socket. A unit test on the
+emitting side passed the whole time. If you add a field the client reads, add it to that function
+and to that test.
+
+`userIds` is deliberately **not** in the payload — it is the recipient filter the broadcaster uses
+to decide who to send to, and shipping it would hand every recipient the list of everyone else with
+access to the note.
+
+### Known gaps, deliberately
+
+- **A note edited while you were offline produces no chip at all**, not even an unattributed one.
+  The event only reaches connected clients, and unlike the note list there is no local diff for
+  content. Added and removed notes *are* caught on reconnect, via the registry diff. Closing this
+  needs server-side per-user event persistence.
+- **A chip can outlive its note.** A restored entry for a note deleted while you were away sits in
+  the store until the user applies changes or it is evicted by the 200-entry cap. Pruning against
+  the note list at startup was considered and rejected: shared-note aliases may not have loaded
+  yet, and wrongly pruning valid chips is the worse failure.
+
+  There is deliberately **no time-based expiry**. An earlier version dropped entries after a
+  fortnight; that was removed because "somebody changed this and you have not looked" does not stop
+  being true on a calendar, and the cap is what actually bounds the store. Do not re-add one
+  without a reason that is about size rather than about staleness.
+- **Attachments do not all count as changes yet.** Drawings and link previews do, because they live
+  in the Yjs doc. Images and documents are SQL rows delivered over `/ws/metadata` and
+  `publishNoteMediaMetadataChange` carries no `changedUserId` — and no `userIds` recipient filter
+  either, so those events currently go to every connected metadata client. Adding attribution there
+  is the moment to add the filter.
 
 ## Connections Go Where Attention Is, Not Where Documents Are
 

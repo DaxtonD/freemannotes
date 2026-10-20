@@ -87,3 +87,7 @@ node_modules/.prisma/
 
 # Legal review packet — strategy notes and questions for counsel. Never publish.
 legal-review/
+
+# Session handoff briefing + its state dump - local workflow tooling, not project code.
+HANDOFF.md
+scripts/handoff-state.cjs
