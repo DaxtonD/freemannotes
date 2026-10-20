@@ -4366,23 +4366,41 @@
 }
 
 .note-grid-pending-chip {
+	position: relative;
 	gap: 6px;
 	cursor: pointer;
 	/* Accent border carries the signal; a darkening alone is invisible on dark
 	 * themes and on the darker note-colour tokens. */
 	border-color: var(--color-accent, var(--color-border));
+	/* Tell the browser this is a control, not a possible scroll or zoom start.
+	 * Without it, a coarse pointer can withhold the synthetic click entirely -
+	 * the recurring "you have to press it twice" class documented in CLAUDE.md.
+	 * The delegated touchend handler in App.tsx is the actual fix; this just
+	 * stops the browser from creating the problem in the first place. */
+	touch-action: manipulation;
+}
+
+/* The pulse lives on its own ring, NOT on the chip.
+ *
+ * It is replayed by remounting, and remounting the clickable element is a
+ * hazard: a browser only fires `click` when the press and release land on the
+ * same element, so a count change mid-press would swallow the tap. */
+.note-grid-pending-pulse {
+	position: absolute;
+	inset: -1px;
+	border-radius: 999px;
+	pointer-events: none;
 	animation: notePendingPulse 900ms ease-out 1;
 }
 
-/* One shot, never looping. The element is remounted on each count change to
- * replay it, because a looping pulse is exactly the "loud" this avoids. */
+/* One shot, never looping - a looping pulse is exactly the "loud" this avoids. */
 @keyframes notePendingPulse {
 	0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent, var(--color-text)) 55%, transparent); }
 	100% { box-shadow: 0 0 0 10px transparent; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.note-grid-pending-chip { animation: none; }
+	.note-grid-pending-pulse { animation: none; }
 }
 
 .note-grid-pending-count {
@@ -4393,12 +4411,13 @@
 /* The panel is what makes the chip obviously actionable - a chip that silently
  * rearranges the grid when pressed is a worse affordance than one that opens
  * something. */
+/* Portalled to document.body and positioned from the chip's measured rect, so this is FIXED
+ * rather than absolute. Nested under the chip it was invisible on a phone, and the chip lives in a
+ * wrapping row inside a sticky header - too many candidate containing blocks and clipping
+ * ancestors to reason about. Measuring and clamping in JS removes the question entirely. */
 .note-grid-pending-panel {
-	position: absolute;
-	top: calc(100% + 6px);
-	left: 0;
-	z-index: 40;
-	min-width: 200px;
+	position: fixed;
+	z-index: 200;
 	padding: 10px 12px;
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-sm);
@@ -4417,6 +4436,7 @@
 }
 
 .note-grid-pending-apply {
+	touch-action: manipulation;
 	width: 100%;
 	padding: 6px 10px;
 	border: 1px solid var(--color-border);

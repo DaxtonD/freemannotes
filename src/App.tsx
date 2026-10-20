@@ -7300,13 +7300,57 @@ export function App(): React.JSX.Element {
 
 	const [isPendingChangesOpen, setIsPendingChangesOpen] = React.useState(false);
 	const pendingChipWrapRef = React.useRef<HTMLDivElement | null>(null);
-	// Nothing WAITING means nothing to show, so the popover must not survive a flush. Keyed on the
-	// structural count rather than the map size: edited entries no longer show the chip, so a set
-	// holding only those would have kept an empty popover open behind a hidden chip.
-	React.useEffect(() => {
-		if (summarisePendingNoteChanges(pendingNoteChanges).structural === 0) setIsPendingChangesOpen(false);
-	}, [pendingNoteChanges]);
+	const pendingChipRef = React.useRef<HTMLDivElement | null>(null);
+	const pendingPanelRef = React.useRef<HTMLDivElement | null>(null);
+	/**
+	 * Where to draw the popover, measured from the chip and clamped to the viewport.
+	 *
+	 * The panel is PORTALLED to document.body rather than nested under the chip. Nested, it was
+	 * invisible on a phone and there was no way to tell which ancestor was responsible: the chip
+	 * lives in a WRAPPING chip row inside a sticky header, so `top: 100%` and `left: 0` resolve
+	 * against whatever happens to be the nearest positioned ancestor, and a 200px panel anchored
+	 * to a chip that wrapped right of centre runs off a narrow screen anyway. Measuring and
+	 * clamping removes the entire question. Same approach as the bubble colour picker below.
+	 */
+	const [pendingChangesPanelPos, setPendingChangesPanelPos] = React.useState<{ top: number; left: number; width: number } | null>(null);
 
+	const measurePendingChangesPanel = React.useCallback(() => {
+		if (typeof window === 'undefined') return;
+		const rect = pendingChipRef.current?.getBoundingClientRect();
+		if (!rect) return;
+		const width = Math.min(300, Math.max(200, window.innerWidth - 24));
+		const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - width - 12));
+		// Below the chip when there is room, otherwise above it.
+		const estimatedHeight = 128;
+		const below = rect.bottom + 6;
+		const top = below + estimatedHeight <= window.innerHeight - 12
+			? below
+			: Math.max(12, rect.top - estimatedHeight - 6);
+		setPendingChangesPanelPos({ top, left, width });
+	}, []);
+
+	const togglePendingChangesPanel = React.useCallback(() => {
+		setIsPendingChangesOpen((open) => {
+			if (!open) measurePendingChangesPanel();
+			return !open;
+		});
+	}, [measurePendingChangesPanel]);
+
+	/**
+	 * The chip is a plain div with onClick, exactly like the filter chips beside it.
+	 *
+	 * It once carried a delegated touchend handler, on the theory that a tap in a scrollable row
+	 * can be denied a click (a real and recurring hazard here - see the media-sheet notes in
+	 * CLAUDE.md). It was unnecessary: the filter chips in this same row are built identically with
+	 * no touch handling and have always worked, and instrumenting the chip on a phone showed
+	 * React's onClick firing on the first tap. What was actually broken was the popover's
+	 * POSITION, not the tap.
+	 *
+	 * The delegate was removed rather than left in, because it has to preventDefault() on touchend
+	 * to avoid double-firing, and suppressing the synthetic click is itself a bug this codebase has
+	 * hit three times. It also caused one here: the ghost-click window it opened swallowed the very
+	 * click it dispatched.
+	 */
 	/**
 	 * Close the popover on a click anywhere else, and on Escape.
 	 *
@@ -7323,9 +7367,12 @@ export function App(): React.JSX.Element {
 		if (!isPendingChangesOpen) return;
 		if (typeof document === 'undefined') return;
 		const handlePointerDown = (event: PointerEvent | MouseEvent | TouchEvent): void => {
-			const wrap = pendingChipWrapRef.current;
 			const target = event.target;
-			if (wrap && target instanceof Node && wrap.contains(target)) return;
+			if (!(target instanceof Node)) return;
+			// The panel is portalled to body, so it is NOT inside the wrapper - checking only the
+			// wrapper would close the popover the instant anybody pressed a control inside it.
+			if (pendingChipWrapRef.current?.contains(target)) return;
+			if (pendingPanelRef.current?.contains(target)) return;
 			setIsPendingChangesOpen(false);
 		};
 		const handleKeyDown = (event: KeyboardEvent): void => {
@@ -7333,11 +7380,16 @@ export function App(): React.JSX.Element {
 		};
 		document.addEventListener('pointerdown', handlePointerDown);
 		document.addEventListener('keydown', handleKeyDown);
+		// Fixed positioning means scrolling or resizing would leave it behind.
+		window.addEventListener('scroll', measurePendingChangesPanel, true);
+		window.addEventListener('resize', measurePendingChangesPanel);
 		return () => {
 			document.removeEventListener('pointerdown', handlePointerDown);
 			document.removeEventListener('keydown', handleKeyDown);
+			window.removeEventListener('scroll', measurePendingChangesPanel, true);
+			window.removeEventListener('resize', measurePendingChangesPanel);
 		};
-	}, [isPendingChangesOpen]);
+	}, [isPendingChangesOpen, measurePendingChangesPanel]);
 
 	/** Apply everything that was held back. */
 	const flushPendingNoteChanges = React.useCallback(() => {
@@ -13247,28 +13299,48 @@ export function App(): React.JSX.Element {
 								{pendingNoteChangeSummary.structural > 0 && !isEditorOverlayOpen && isNoteGridSurfaceActive ? (
 									<div className="note-grid-pending-wrap" ref={pendingChipWrapRef}>
 										<div
-											// Remounting on each count change restarts the one-shot pulse
-											// without needing a looping animation, which would be exactly the
-											// "loud" this is meant to avoid.
-											key={pendingNoteChangeSummary.structural}
+											ref={pendingChipRef}
 											className="note-grid-scope-chip is-interactive note-grid-pending-chip"
 											role="button"
 											tabIndex={0}
 											aria-haspopup="dialog"
 											aria-expanded={isPendingChangesOpen}
 											aria-label={t('grid.pendingChangesAria').replace('{count}', String(pendingNoteChangeSummary.structural))}
-											onClick={() => setIsPendingChangesOpen((open) => !open)}
+											onClick={togglePendingChangesPanel}
 											onKeyDown={(event) => {
 												if (event.key !== 'Enter' && event.key !== ' ') return;
 												event.preventDefault();
-												setIsPendingChangesOpen((open) => !open);
+												togglePendingChangesPanel();
 											}}
 										>
+											{/* The one-shot pulse is replayed by REMOUNTING this ring on each count
+											    change. The `key` used to sit on the clickable div itself, which is a
+											    hazard regardless of anything else: a browser only fires `click` when
+											    pointerdown and pointerup land on the SAME element, so a count change
+											    mid-press would destroy the element and swallow the press. Keeping the
+											    interactive element mounted and replacing only this decoration costs
+											    nothing. (Not the cause of the mobile bug below - that was the missing
+											    touch handler.) */}
+											<span
+												key={pendingNoteChangeSummary.structural}
+												className="note-grid-pending-pulse"
+												aria-hidden="true"
+											/>
 											<FontAwesomeIcon icon={faArrowsRotate} />
 											<span className="note-grid-pending-count">{pendingNoteChangeSummary.structural}</span>
 										</div>
-										{isPendingChangesOpen ? (
-											<div className="note-grid-pending-panel" role="dialog" aria-label={t('grid.pendingChangesTitle')}>
+										{isPendingChangesOpen && pendingChangesPanelPos ? ReactDOM.createPortal(
+											<div
+												ref={pendingPanelRef}
+												className="note-grid-pending-panel"
+												role="dialog"
+												aria-label={t('grid.pendingChangesTitle')}
+												style={{
+													top: pendingChangesPanelPos.top,
+													left: pendingChangesPanelPos.left,
+													width: pendingChangesPanelPos.width,
+												}}
+											>
 												<p className="note-grid-pending-breakdown">
 													{t('grid.pendingChangesBreakdown')
 														.replace('{new}', String(pendingNoteChangeSummary.added))
@@ -13284,7 +13356,8 @@ export function App(): React.JSX.Element {
 												>
 													{t('grid.pendingChangesShow')}
 												</button>
-											</div>
+											</div>,
+											document.body
 										) : null}
 									</div>
 								) : null}
