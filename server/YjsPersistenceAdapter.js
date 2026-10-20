@@ -43,6 +43,16 @@ const REGISTRY_SUFFIX_RE = /^__|__$/;
 // PDF markup rooms ("markup:<versionId>") are saved in their own table, not the `document` table.
 const { isMarkupRoomName, parseMarkupRoomName, loadMarkupState, saveMarkupState } = require('./markupRooms');
 
+/**
+ * An empty Yjs document encodes to 2 bytes. Anything at or below this held nothing at all.
+ *
+ * NOT a size heuristic: Yjs keeps deletions as tombstones, so a note whose content the user
+ * deleted still encodes large. 2 bytes means "never had anything", which is what makes it safe to
+ * refuse such a write over stored content. `_persistMarkupDoc` has used the same test for a while;
+ * the note path now does too.
+ */
+const EMPTY_DOC_STATE_MAX_BYTES = 2;
+
 // ─── Configuration constants ────────────────────────────────────────────────
 
 /** How often (ms) to auto-persist dirty docs while clients are connected. */
@@ -663,6 +673,48 @@ class YjsPersistenceAdapter {
 		if (previousStateVector && previousStateVector.equals(stateVector)) {
 			logEvent('YJS_PERSIST', { ...getRoomDebugContext(docName), event: 'skip-noop', bytes: state.length });
 			return;
+		}
+
+		// ─── An EMPTY document must never overwrite stored content ───────────────────────
+		//
+		// This is a data-loss guard, added after 23 notes in one workspace were blanked inside a
+		// 27-second window: `state` went to 2 bytes and `stateVector` with it, while the registry
+		// still held their titles. Confirmed by audit; every other workspace was untouched.
+		//
+		// Whatever leaves an empty doc in memory (still unknown — see below), THIS is the line
+		// that made it permanent, because the upsert below faithfully writes it over the real
+		// bytes. `_persistMarkupDoc` already refuses exactly this case; the note path never did.
+		//
+		// **Why 2 bytes is a safe test, and not merely a heuristic:** Yjs keeps deletions as
+		// tombstones, so a note the user emptied by hand still encodes to a LARGE state. A
+		// 2-byte state is not "a note whose content was deleted", it is "a document that never
+		// held anything". So this cannot refuse a legitimate write — an emptied note, a new note,
+		// and a never-used room are all distinguishable from it.
+		//
+		// A permanent delete removes the row (see the delete tombstones in server.js); it does
+		// not come through here as an empty write.
+		if (state.length <= EMPTY_DOC_STATE_MAX_BYTES) {
+			const existing = await this._prisma.document
+				.findUnique({ where: { docId: docName }, select: { state: true } })
+				.catch(() => null);
+			const storedBytes = existing && existing.state ? existing.state.length : 0;
+			if (storedBytes > EMPTY_DOC_STATE_MAX_BYTES) {
+				// Loud on purpose. This is the trap that turns an unreproducible mystery into a
+				// caught event: it names the room and the moment, so the NEXT occurrence tells us
+				// what empties the doc instead of silently destroying the evidence.
+				console.error(
+					`[persist] REFUSED to overwrite ${storedBytes} stored bytes with an EMPTY document`
+					+ ` — room=${docName}. Stored content preserved. This indicates the in-memory doc`
+					+ ` was empty when it should not have been; please report with the surrounding log.`
+				);
+				logEvent('YJS_PERSIST_REFUSED_EMPTY', {
+					...getRoomDebugContext(docName),
+					event: 'refused-empty-overwrite',
+					storedBytes,
+					incomingBytes: state.length,
+				});
+				return;
+			}
 		}
 
 		try {
