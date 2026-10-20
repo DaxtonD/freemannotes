@@ -50,6 +50,8 @@ import {
 	refreshRemoteNoteImages,
 } from '../../core/noteMediaStore';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
+import type { NoteChangeChipRow } from '../../core/noteChangeChips';
+import { NoteChangeOverlay } from './NoteChangeOverlay';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
@@ -135,6 +137,19 @@ export type NoteCardProps = {
 	debugTransitionTraceId?: string | null;
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
+	/**
+	 * Who changed this note since the user last looked, already resolved to names and avatars by
+	 * `buildNoteChangeChipRow`. Absent (the overwhelmingly common case) means no treatment at all.
+	 *
+	 * Built upstream rather than here so the grid can produce one stable object per changed card:
+	 * GridNoteCard is memoised on prop identity, and a fresh row object per render would defeat
+	 * that for every card in the grid.
+	 */
+	changeChipRow?: NoteChangeChipRow | null;
+	/** Reads "Changed by Alice, Bob" - appended to the card's aria-label. */
+	changeChipLabel?: string;
+	/** Title text for the "+2" chip, e.g. "2 more people". */
+	changeChipOverflowLabel?: string;
 };
 
 type NoteCardImagePreview = {
@@ -2380,14 +2395,18 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		</div>
 	) : null;
 
+	// One source of truth for "does this card wear the treatment", so the border signal, the
+	// overlay and the aria-label can never disagree about it.
+	const hasChangeTreatment = Boolean(props.changeChipRow && props.changeChipRow.chips.length > 0);
+
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${showLinkedDrawingPreview || showImageGridPreview ? ` ${styles.mediaPreviewCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}`}
+			className={`${styles.card}${showLinkedDrawingPreview || showImageGridPreview ? ` ${styles.mediaPreviewCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}${hasChangeTreatment ? ` ${styles.cardChanged}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			data-drag-handle={props.useWholeCardDragHandle ? 'true' : undefined}
-			aria-label={`Note ${props.noteId}`}
+			aria-label={hasChangeTreatment && props.changeChipLabel ? `Note ${props.noteId}. ${props.changeChipLabel}` : `Note ${props.noteId}`}
 			role={props.onOpen ? 'button' : undefined}
 			tabIndex={props.onOpen ? 0 : undefined}
 			onPointerDown={(e) => {
@@ -2878,6 +2897,15 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				onClose={() => setIsColorPickerOpen(false)}
 				onSelect={handleColorSelect}
 			/>
+			{/* Last child so it paints over the content it is shading, and absolutely positioned so
+			    it never joins the flex flow the packer measures. Not rendered in trash view: that
+			    card already has its own dim-and-blur treatment and a restore button to keep clear. */}
+			{hasChangeTreatment && !props.isTrashView && props.changeChipRow ? (
+				<NoteChangeOverlay
+					row={props.changeChipRow}
+					overflowLabel={props.changeChipOverflowLabel ?? ''}
+				/>
+			) : null}
 		</article>
 	);
 }

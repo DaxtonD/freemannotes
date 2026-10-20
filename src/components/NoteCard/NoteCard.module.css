@@ -20,6 +20,40 @@
 	box-shadow: inset 0 0 0 1px var(--note-card-banner-highlight, transparent);
 }
 
+/* The "this changed" SIGNAL, deliberately separate from the scrim in NoteChangeOverlay.module.css.
+   A darkening gradient is invisible on an already-dark card, and half the note colour tokens are
+   dark, so the scrim alone carries no signal in dark mode. An accent border reads in every theme
+   and on every token. Border COLOUR only plus an inset shadow - no width change, because growing
+   the border by a pixel changes the card's box and the packer measures that. */
+.cardChanged {
+	border-color: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 64%, var(--note-color-border, var(--color-border)));
+	box-shadow:
+		inset 0 0 0 1px color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 38%, transparent),
+		0 0 0 1px color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 16%, transparent);
+	transition: border-color 260ms ease-out, box-shadow 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.cardChanged {
+		transition: none;
+	}
+}
+
+@media (pointer: fine) {
+	/* The card's bottom action dock (.cardFooter/.cardDock, further down) is hover-revealed and
+	   occupies EXACTLY the strip the change chips sit in. Rather than fight it over z-index, yield:
+	   moving the pointer onto the card is a deliberate move toward those buttons, and the fade
+	   doubles as "let me see this card without the treatment on it". Coarse pointers have no dock
+	   at all (.cardFooter is display:none outside this query), so the chips stay put there.
+
+	   Attribute selector, not a class, because the overlay's classes are hashed in a different CSS
+	   module and cannot be named from this file. */
+	.card:hover [data-note-change-overlay],
+	.card:focus-within [data-note-change-overlay] {
+		opacity: 0;
+	}
+}
+
 .moreMenuOpen {
 	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border) 70%);
 }

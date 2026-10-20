@@ -1,0 +1,217 @@
+/* The "somebody changed this" treatment. See NoteChangeOverlay.tsx for why each piece exists.
+
+   Everything here is absolutely positioned and pointer-events:none on purpose. The card's height
+   is measured by a ResizeObserver and fed straight into the masonry packer, so anything that joins
+   the card's flex flow changes layout — which is the subsystem behind the oscillation bug, the
+   1.11.1 drag regression and both abandoned card-hold attempts. This overlay stays out of it. */
+
+.overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	border-radius: inherit;
+	overflow: hidden;
+	pointer-events: none;
+	/* Declarative, NOT animated: NoteCard.module.css fades the whole overlay out on hover so the
+	   card's bottom action dock is usable, and a CSS animation with fill-mode `both` would outrank
+	   that rule in the cascade and pin the opacity back to 1. The entrance animation therefore
+	   lives on the children below, not here. */
+	opacity: 1;
+	transition: opacity 180ms ease-out;
+
+	/* ── The veil colour, and the one idea that makes this work in every theme ──────────────
+	   Derived from the card's own TEXT colour, not from black.
+
+	   A black wash was the first attempt and it only worked on light cards: on a dark theme, or on
+	   any of the darker note colour tokens, darkening something already dark is invisible. Text
+	   colour is the right base because a note colour model guarantees its text contrasts with its
+	   background — so this veil contrasts with the card by construction, whatever the theme and
+	   whatever the token. Dark cards get a light fog, light cards get a dark one, and neither
+	   needs a per-theme rule.
+
+	   The pinch of accent stops it reading as a plain grey fog and ties it to the accent border
+	   doing the "this changed" signalling.
+
+	   `--list-row-text` is in the chain for the list/strip variant: a row sets `--list-row-*`
+	   rather than `--note-color-*`, so without it the veil there would fall straight through to
+	   the theme text colour and ignore the row's own note colour. */
+	--note-change-veil: color-mix(
+		in srgb,
+		var(--note-color-text, var(--list-row-text, var(--color-text))) 86%,
+		var(--note-color-accent, var(--color-accent))
+	);
+}
+
+/* ── List / strip row variant ──────────────────────────────────────────────────────────────────
+   A row is 44px tall with an absolutely-positioned more-menu button at `right: 6px`. So the chips
+   run horizontally and stop short of it, and the veil fades left to right instead of bottom to
+   top. Everything else - no layout participation, no pointer events, colours taken from the row -
+   is identical to the card. */
+.overlayRow {
+	flex-direction: row;
+	align-items: center;
+	justify-content: flex-end;
+}
+
+.scrimRow {
+	/* Full row, strongest at the right where the chips are. */
+	inset: 0;
+	height: auto;
+	min-height: 0;
+	background: linear-gradient(
+		to right,
+		transparent 0%,
+		color-mix(in srgb, var(--note-change-veil) 10%, transparent) 38%,
+		color-mix(in srgb, var(--note-change-veil) 26%, transparent) 62%,
+		color-mix(in srgb, var(--note-change-veil) 46%, transparent) 100%
+	);
+}
+
+.chipStackRow {
+	flex-direction: row;
+	align-items: center;
+	/* Clear of the more-menu button, which lives at right: 6px and is 28px wide. */
+	padding: 0 40px 0 10px;
+	gap: 5px;
+}
+
+/* Full card, bottom to top. Strongest along the bottom edge where the chips sit, gone by the top.
+   It deliberately covers more than the chips strictly need: the point is that a changed card is
+   obvious at a glance across the whole grid, not that it is subtly annotated. */
+.scrim {
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(
+		to top,
+		color-mix(in srgb, var(--note-change-veil) 66%, transparent) 0%,
+		color-mix(in srgb, var(--note-change-veil) 52%, transparent) 18%,
+		color-mix(in srgb, var(--note-change-veil) 34%, transparent) 42%,
+		color-mix(in srgb, var(--note-change-veil) 18%, transparent) 66%,
+		color-mix(in srgb, var(--note-change-veil) 7%, transparent) 85%,
+		transparent 100%
+	);
+}
+
+/* Gentle, not a fly-in. The user was explicit about this: a card quietly acquiring a treatment
+   reads as information, a card snapping into one reads as a glitch. */
+.scrim,
+.chipStack {
+	animation: noteChangeOverlayIn 280ms ease-out both;
+}
+
+@keyframes noteChangeOverlayIn {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.overlay {
+		transition: none;
+	}
+
+	.scrim,
+	.chipStack {
+		animation: none;
+	}
+}
+
+/* Stacked, not a row. A vertical stack means a long name ellipsises in place instead of costing a
+   slot, which is what lets the visible count be a fixed three (see noteChangeChips.ts). Covering
+   the bottom few lines of the note is accepted — knowing who changed a card beats reading them. */
+.chipStack {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 5px;
+	padding: 10px;
+	min-width: 0;
+	max-width: 100%;
+	overflow: hidden;
+}
+
+/* The card's own surface, lifted off the veil by a shadow. Same reasoning as the veil: colours
+   taken from the card mean contrast is guaranteed in every theme without a single per-theme rule.
+   A hard-coded near-black pill looked like a hole punched in a dark card. */
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+	min-width: 0;
+	max-width: 100%;
+	padding: 2px 9px 2px 3px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--note-color-text, var(--list-row-text, var(--color-text))) 22%, transparent);
+	background: color-mix(
+		in srgb,
+		var(--note-color-card-bg, var(--list-row-bg, var(--color-surface))) 92%,
+		var(--note-color-text, var(--list-row-text, var(--color-text)))
+	);
+	color: var(--note-color-text, var(--list-row-text, var(--color-text)));
+	box-shadow: 0 1px 4px color-mix(in srgb, #000 26%, transparent);
+	font-size: 11px;
+	line-height: 1.55;
+	white-space: nowrap;
+}
+
+.avatar,
+.avatarFallback {
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	object-fit: cover;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.avatarFallback {
+	background: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 62%, var(--note-color-card-bg, var(--list-row-bg, var(--color-surface))));
+	color: var(--note-color-text, var(--list-row-text, var(--color-text)));
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+}
+
+.name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-weight: 600;
+}
+
+.elapsed {
+	flex: 0 0 auto;
+	opacity: 0.66;
+	font-variant-numeric: tabular-nums;
+}
+
+/* Reads "+2 more" rather than a bare "+2" — a lone number next to three names is ambiguous about
+   whether it counts people or changes. */
+.overflowChip {
+	display: inline-flex;
+	align-items: center;
+	flex: 0 0 auto;
+	max-width: 100%;
+	padding: 2px 9px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--note-color-text, var(--list-row-text, var(--color-text))) 20%, transparent);
+	background: color-mix(
+		in srgb,
+		var(--note-color-card-bg, var(--list-row-bg, var(--color-surface))) 92%,
+		var(--note-color-text, var(--list-row-text, var(--color-text)))
+	);
+	color: color-mix(in srgb, var(--note-color-text, var(--list-row-text, var(--color-text))) 78%, transparent);
+	box-shadow: 0 1px 4px color-mix(in srgb, #000 26%, transparent);
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1.55;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

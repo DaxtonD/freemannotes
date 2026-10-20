@@ -3,6 +3,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import { touchUpdatedAt, setNoteTrashed, readTrashState, setNoteCollection, setNoteLabelIds, readCollectionState, readDrawingLinkState, readLabelState } from './noteModel';
 import { RICHTEXT_INTERNAL_ORIGIN } from './richText';
+import { NOTE_ORDER_RECONCILE_ORIGIN } from './pendingNoteChanges';
 import { COLLECTIONS_REGISTRY_DOC_ID, createCollection, readCollectionsFromDoc, type CollectionRecord } from '../services/collectionService';
 import { LABELS_REGISTRY_DOC_ID, createLabel, readLabelsFromDoc, type LabelRecord } from '../services/labelService';
 import {
@@ -966,27 +967,39 @@ export class DocumentManager {
 		const key = this.normalizeNoteId(noteId);
 		const notesList = await this.getNotesList();
 		const noteOrder = await this.getNoteOrder();
-		const exists = notesList.toArray().some((item) => String(item.get('id') ?? '').trim() === key);
-		if (!exists) {
-			const map = new Y.Map<any>();
-			map.set('id', key);
-			map.set('title', String(title ?? ''));
-			const registryDoc = (notesList as any).doc as Y.Doc | undefined | null;
-			const run = (): void => {
-				notesList.push([map]);
-			};
-			if (registryDoc) registryDoc.transact(run);
-			else run();
+		const needsListEntry = !notesList.toArray().some((item) => String(item.get('id') ?? '').trim() === key);
+		const needsOrderEntry = !noteOrder.toArray().includes(key);
+		if (!needsListEntry && !needsOrderEntry) {
+			await this.getDocWithSync(key);
+			return;
 		}
 
-		if (!noteOrder.toArray().includes(key)) {
-			const registryDoc = (noteOrder as any).doc as Y.Doc | undefined | null;
-			const run = (): void => {
-				noteOrder.insert(0, [key]);
-			};
-			if (registryDoc) registryDoc.transact(run);
-			else run();
-		}
+		// ONE transaction for both arrays, and that is load-bearing rather than tidy.
+		//
+		// These used to be two separate transacts, which meant two separate updates on the wire -
+		// and a collaborator could observe the notesList entry before the noteOrder entry. Their
+		// grid has a self-healing repair (`ensureOrderContainsAllRegistryIds` in NoteGrid) that
+		// appends any registry id missing from the order, so in that gap THEIR device wrote the
+		// id into noteOrder itself. A local write, which the pending-change rules then
+		// (correctly, by their own logic) read as "this user did it" - so a note created by
+		// somebody else appeared instantly on everyone's grid instead of waiting behind the chip.
+		// Measured: the receiving device's diff reported `local: true`.
+		//
+		// Writing both arrays atomically means nobody can ever see the half-state.
+		const registryDoc = (notesList as any).doc as Y.Doc | undefined
+			?? (noteOrder as any).doc as Y.Doc | undefined
+			?? null;
+		const run = (): void => {
+			if (needsListEntry) {
+				const map = new Y.Map<any>();
+				map.set('id', key);
+				map.set('title', String(title ?? ''));
+				notesList.push([map]);
+			}
+			if (needsOrderEntry) noteOrder.insert(0, [key]);
+		};
+		if (registryDoc) registryDoc.transact(run);
+		else run();
 
 		// Ensure note doc + providers are initialized.
 		await this.getDocWithSync(key);
@@ -1001,7 +1014,7 @@ export class DocumentManager {
 	 * workspace. Ids already present in noteOrder are skipped. Caller is
 	 * responsible for ordering refIds (e.g. newest-accepted first).
 	 */
-	public async addNoteReferences(refIds: readonly string[]): Promise<void> {
+	public async addNoteReferences(refIds: readonly string[], options?: { origin?: unknown }): Promise<void> {
 		if (refIds.length === 0) return;
 		const noteOrder = await this.getNoteOrder();
 		const existing = new Set(noteOrder.toArray());
@@ -1013,14 +1026,14 @@ export class DocumentManager {
 		const run = (): void => {
 			noteOrder.insert(0, toInsert);
 		};
-		if (registryDoc) registryDoc.transact(run);
+		if (registryDoc) registryDoc.transact(run, options?.origin);
 		else run();
 	}
 
 	/** Remove shared-note reference ids from the active workspace's noteOrder
 	 *  (e.g. after the share was revoked or left). Positionless — removes
 	 *  wherever the id currently sits, including a manually dragged position. */
-	public async removeNoteReferences(refIds: readonly string[]): Promise<void> {
+	public async removeNoteReferences(refIds: readonly string[], options?: { origin?: unknown }): Promise<void> {
 		if (refIds.length === 0) return;
 		const noteOrder = await this.getNoteOrder();
 		const toRemove = new Set(refIds.map((id) => this.normalizeNoteId(id)));
@@ -1031,7 +1044,7 @@ export class DocumentManager {
 				if (toRemove.has(current[i])) noteOrder.delete(i, 1);
 			}
 		};
-		if (registryDoc) registryDoc.transact(run);
+		if (registryDoc) registryDoc.transact(run, options?.origin);
 		else run();
 	}
 
@@ -2618,6 +2631,10 @@ export class DocumentManager {
 			if (tx.origin === this.accessOrigin) return;
 			if (tx.origin === this.updatedAtOrigin) return;
 			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			// A note-order RECONCILE is this device mirroring server/registry state, not the user
+			// editing anything. Without this it counts as an unsent offline edit, which makes the
+			// registry room refuse destruction and permanently claim a socket.
+			if (tx.origin === NOTE_ORDER_RECONCILE_ORIGIN) return;
 			if (tx.changed.size > 0 && !this.isRoomConnected(roomName)) {
 				// Remember that this workspace owes the server something, so startup can flush
 				// only the workspaces that actually need it instead of all of them. Marked
@@ -2705,6 +2722,7 @@ export class DocumentManager {
 			if (tx.origin === this.accessOrigin) return;
 			if (tx.origin === this.updatedAtOrigin) return;
 			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			if (tx.origin === NOTE_ORDER_RECONCILE_ORIGIN) return;
 			// Guard: a transaction with no actual Yjs map/array changes (e.g. a
 			// metadata-only read that wrote `lastAccessedAt` as a side-effect)
 			// should not advance `updatedAt` and trigger a bubble score bump.

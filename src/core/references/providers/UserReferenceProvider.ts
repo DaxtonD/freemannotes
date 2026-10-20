@@ -1,9 +1,37 @@
 import type { ReferenceProvider, ReferenceResult } from '../ReferenceProvider';
 import { listPriorCollaborators } from '../../priorCollaboratorsApi';
 import { setLiveUserAvatar } from '../../liveUserAvatarCache';
+import { updateKnownUserCache } from '../../userIdentityCache';
+import { updateAvatarCache } from '../../userAvatarCache';
 import { readWorkspaceListLocalCache } from '../../workspaceListLocalCache';
 
 const LS_KEY_PREFIX = 'freemannotes.workspaceMembersCache.v1:';
+
+/**
+ * Record a members list everywhere identity is looked up, not just in the @-mention dropdown.
+ *
+ * This used to feed `setLiveUserAvatar` alone, which meant `/api/workspace/members` - the one
+ * request that reliably knows every co-member's name and picture - left no trace in the shared
+ * identity cache. Anything resolving a bare userId therefore came up empty for a workspace
+ * co-member who was never a note collaborator and never sent an invite, and the changed-card chips
+ * showed "Someone" for a person whose name was sitting in another cache the whole time.
+ */
+function recordMemberIdentities(members: readonly ReferenceResult[]): void {
+	for (const member of members) {
+		if (member.id) setLiveUserAvatar(member.id, member.avatarUrl ?? null);
+	}
+	const users = members
+		.filter((member) => Boolean(member.id))
+		.map((member) => ({
+			id: member.id,
+			name: member.label ?? null,
+			email: member.sublabel ?? null,
+			profileImage: member.avatarUrl ?? null,
+		}));
+	if (users.length === 0) return;
+	updateKnownUserCache(users);
+	updateAvatarCache(users);
+}
 
 let _workspaceMembersCache: ReferenceResult[] | null = null;
 let _loading = false;
@@ -26,9 +54,7 @@ export function initWorkspaceMembersCacheForUser(userId: string): void {
 			const parsed = JSON.parse(raw) as ReferenceResult[];
 			if (Array.isArray(parsed) && parsed.length > 0) {
 				_workspaceMembersCache = parsed;
-				for (const m of parsed) {
-					if (m.id) setLiveUserAvatar(m.id, m.avatarUrl ?? null);
-				}
+				recordMemberIdentities(parsed);
 				return;
 			}
 		}
@@ -59,9 +85,7 @@ export function initWorkspaceMembersCacheForUser(userId: string): void {
 		}
 		if (members.length > 0) {
 			_workspaceMembersCache = members;
-			for (const m of members) {
-				if (m.id) setLiveUserAvatar(m.id, m.avatarUrl ?? null);
-			}
+			recordMemberIdentities(members);
 		}
 	} catch {
 		// ignore
@@ -101,9 +125,7 @@ async function fetchWorkspaceMembers(): Promise<ReferenceResult[]> {
 			}));
 		_workspaceMembersCache = members;
 		saveWorkspaceMembersCacheToStorage(members);
-		for (const m of members) {
-			if (m.id) setLiveUserAvatar(m.id, m.avatarUrl ?? null);
-		}
+		recordMemberIdentities(members);
 		return members;
 	} catch {
 		// Offline or error: return the in-memory cache if it was populated by localStorage on init
@@ -137,9 +159,7 @@ export async function refreshUserAvatarsCache(): Promise<void> {
 			}));
 		_workspaceMembersCache = members;
 		saveWorkspaceMembersCacheToStorage(members);
-		for (const m of members) {
-			if (m.id) setLiveUserAvatar(m.id, m.avatarUrl ?? null);
-		}
+		recordMemberIdentities(members);
 	} catch {
 		// Offline or error — keep existing cache
 	} finally {

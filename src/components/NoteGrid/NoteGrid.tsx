@@ -92,6 +92,14 @@ import {
 	writeWorkspaceRenderSnapshot,
 } from '../../core/workspaceRenderSnapshot';
 import { digestShellCanRender } from '../../core/noteDigestProjection';
+import {
+	buildNoteChangeChipRow,
+	type NoteChangeChipIdentity,
+	type NoteChangeChipRow,
+} from '../../core/noteChangeChips';
+import { NOTE_ORDER_RECONCILE_ORIGIN, type PendingNoteChange } from '../../core/pendingNoteChanges';
+import { resolveKnownUserById } from '../../core/userIdentityCache';
+import { getCachedAvatarUrl } from '../../core/userAvatarCache';
 import { readNoteDigestShellById, subscribeNoteDigestShells } from '../../core/noteDigestStore';
 import styles from './NoteGrid.module.css';
 import {
@@ -263,6 +271,13 @@ export type NoteGridProps = {
 	 * deliberately opened has to be on screen.
 	 */
 	withheldNoteIds?: ReadonlySet<string>;
+	/**
+	 * Notes somebody else EDITED since the user last looked, keyed by note id. Unlike
+	 * `withheldNoteIds` these cards keep rendering, live and fully interactive - the change is
+	 * already applied. They just wear a scrim and a row of chips saying who did it, so a card that
+	 * grew or shrank on its own is explained rather than mysterious.
+	 */
+	pendingEditedChanges?: ReadonlyMap<string, PendingNoteChange>;
 	/** Fires whenever pendingNoteWsSync changes value. */
 	/**
 	 * Fires whenever the number of note rooms still awaiting their first WS sync changes.
@@ -275,6 +290,8 @@ export type NoteGridProps = {
 		pendingCount: number,
 		detail?: {
 			totalOrdered: number;
+			/** Notes whose real content has arrived. Monotonic - see loadedNoteCount. */
+			loaded: number;
 			unresolved: number;
 			registrySynced: boolean;
 			/**
@@ -730,6 +747,16 @@ function moveNoteToFrontOfOrder(noteOrder: Y.Array<string>, noteId: string): voi
 	});
 }
 
+/**
+ * Self-healing: anything in the registry but missing from the order gets appended.
+ *
+ * Tagged as a RECONCILE, and that matters. This repair runs on every device, so when somebody
+ * else's new note arrives it can be THIS device that writes the id into noteOrder - a local write,
+ * which the pending-change rules would otherwise read as "this user added a note" and apply
+ * instantly. That was the cause of "Meshuga created a note and it appeared immediately for
+ * Daxton". The atomic write in `DocumentManager.createNote` closes the window that let it happen;
+ * this tag makes the repair honest about what it is regardless.
+ */
 function ensureOrderContainsAllRegistryIds(noteOrder: Y.Array<string>, registryIds: readonly string[]): void {
 	const current = new Set(readOrderIds(noteOrder));
 	const missing = registryIds.filter((id) => !current.has(id));
@@ -737,7 +764,7 @@ function ensureOrderContainsAllRegistryIds(noteOrder: Y.Array<string>, registryI
 	const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
 	ydoc.transact(() => {
 		noteOrder.insert(noteOrder.length, missing);
-	});
+	}, NOTE_ORDER_RECONCILE_ORIGIN);
 }
 
 function startOfWeek(date: Date): Date {
@@ -809,6 +836,9 @@ type GridNoteCardProps = {
 	hideDuringDropSettle?: boolean;
 	disablePositionLayout?: boolean;
 	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
+	changeChipRow?: NoteChangeChipRow | null;
+	changeChipLabel?: string;
+	changeChipOverflowLabel?: string;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	useWholeCardDragHandle?: boolean;
@@ -1210,6 +1240,9 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					preserveControlShell={props.preserveControlShell}
 					debugTransitionTraceId={props.debugTransitionTraceId}
 					loadDrawingDoc={props.loadDrawingDoc}
+					changeChipRow={props.changeChipRow}
+					changeChipLabel={props.changeChipLabel}
+					changeChipOverflowLabel={props.changeChipOverflowLabel}
 					dragHandleRef={props.useWholeCardDragHandle ? undefined : handleDragHandleRef}
 					useWholeCardDragHandle={props.useWholeCardDragHandle}
 				/>
@@ -2575,6 +2608,31 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		[docsById, manager, orderedIds, snapshotDocById]
 	);
 
+	/**
+	 * How many ordered notes have their REAL content, as opposed to something we can draw.
+	 *
+	 * This is what the splash counts off, and it has to be derived from the docs themselves rather
+	 * than from `connection.pendingNoteWsSync`. That set (`noIdbContentRooms`) is populated LAZILY,
+	 * one entry per `getDocWithSync` call, so a note nobody has asked for yet is not in it - and
+	 * `totalOrdered - pending` therefore counted every un-requested note as already done. On a cold
+	 * boot that read "52 of 54" before anything had loaded, collapsed to "12 of 54" when the
+	 * background preload requested the rest, and bounced with every batch after that. Reported as
+	 * "the constant recounting says something is wrong", and it did.
+	 *
+	 * Counting loaded docs instead only ever goes up, and it starts at zero on a fresh install,
+	 * which is the truth.
+	 *
+	 * A snapshot or digest shell deliberately does NOT count: it is a drawable placeholder, not the
+	 * note, and counting it would put the number at 54 of 54 while cards were still shimmering.
+	 */
+	const loadedNoteCount = React.useMemo(
+		() => orderedIds.reduce((total, id) => {
+			const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
+			return liveDoc && hasRenderableNoteContent(liveDoc) ? total + 1 : total;
+		}, 0),
+		[docsById, manager, orderedIds]
+	);
+
 	// ── Display order pipeline ───────────────────────────────────────────────
 	// Two orderings derived from the same filters:
 	//   visibleIds (baseVisibleIds) — pin tier sort for rendering when manual/default.
@@ -2936,7 +2994,9 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		const current = readOrderIds(noteOrder);
 		if (current.length === 0 && registryIds.length > 0) {
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
-			ydoc.transact(() => { noteOrder.insert(0, registryIds); });
+			// Same reasoning as ensureOrderContainsAllRegistryIds: mirroring the registry, not a
+			// user action.
+			ydoc.transact(() => { noteOrder.insert(0, registryIds); }, NOTE_ORDER_RECONCILE_ORIGIN);
 			return;
 		}
 		ensureOrderContainsAllRegistryIds(noteOrder, registryIds);
@@ -2962,7 +3022,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
 			ydoc.transact(() => {
 				for (const index of orphanIndices) noteOrder.delete(index, 1);
-			});
+			}, NOTE_ORDER_RECONCILE_ORIGIN);
 		}
 		const seen = new Set<string>();
 		const dupeIndices: number[] = [];
@@ -2978,7 +3038,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				for (let i = dupeIndices.length - 1; i >= 0; i--) {
 					noteOrder.delete(dupeIndices[i], 1);
 				}
-			});
+			}, NOTE_ORDER_RECONCILE_ORIGIN);
 		}
 	}, [notesList, noteOrder, storeVersion]);
 
@@ -3322,17 +3382,13 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	React.useEffect(() => {
 		const canResolveWithoutRegistryOrder = !noteOrder && orderedIds.length > 0;
 		if (!noteOrder && !canResolveWithoutRegistryOrder) return;
-		if (orderedIds.length > 0 && unresolvedOrderedIds.length > 0) {
-			// Keep the startup gate aligned with the real render path: an ordered
-			// note is not ready until it can render as either a live doc or a
-			// snapshot-backed shell. Otherwise the splash can fade into skeletons.
-			if (!initialLoadCompleteRef.current) {
-				setAllDocsLoaded(false);
-			}
-			return;
-		}
-		// Stall timeout: if WS sync is taking too long, force-clear shimmer so
-		// the user never sees an infinite spinner on a broken connection.
+		// Stall timeout FIRST, before the unresolved check below.
+		//
+		// This used to sit after it, which made the escape hatch unreachable in precisely the
+		// situation it exists for: unresolved notes returned early, so a stalled shimmer could
+		// never be forced open. Proven with `?syncDiag=1`: the capture showed
+		// `shimmer-stall-timeout-fired` with no `grid-revealed-GAVE-UP` mark after it, because the
+		// code that writes it was never reached. After the reorder the mark appears.
 		if (shimmerStalled) {
 			initialLoadCompleteRef.current = true;
 			if (!allDocsLoaded) {
@@ -3349,6 +3405,15 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 					+ `, connection=${connection.state}`
 				);
 				setAllDocsLoaded(true);
+			}
+			return;
+		}
+		if (orderedIds.length > 0 && unresolvedOrderedIds.length > 0) {
+			// Keep the startup gate aligned with the real render path: an ordered
+			// note is not ready until it can render as either a live doc or a
+			// snapshot-backed shell. Otherwise the splash can fade into skeletons.
+			if (!initialLoadCompleteRef.current) {
+				setAllDocsLoaded(false);
 			}
 			return;
 		}
@@ -3452,13 +3517,14 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	React.useEffect(() => {
 		props.onSyncProgress?.(connection.pendingNoteWsSync, {
 			totalOrdered: orderedIds.length,
+			loaded: loadedNoteCount,
 			unresolved: unresolvedOrderedIds.length,
 			registrySynced: connection.registryWsSynced,
 			digestShellCount: digestShellById.size,
 			connectionState: String(connection.state),
 		});
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, digestShellById.size, orderedIds.length, unresolvedOrderedIds.length]);
+	}, [connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, digestShellById.size, loadedNoteCount, orderedIds.length, unresolvedOrderedIds.length]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {
@@ -4728,6 +4794,81 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 			lastRepackReason: repackReasonRef.current,
 		});
 	});
+	// ── Changed-card chips ────────────────────────────────────────────────────────────────────
+	//
+	// Who changed each card the user has not looked at yet, resolved to names and avatars. The
+	// visible count is a fixed three plus an overflow chip (see noteChangeChips.ts), so nothing
+	// here depends on card geometry. Built as ONE memo rather than per card inside renderGridCard
+	// because GridNoteCard is memoised on prop identity: a fresh row object per card per render
+	// would defeat that for every card in the grid, changed or not. Cards with nothing pending get
+	// `undefined`, which is stable.
+	const pendingEditedChanges = props.pendingEditedChanges;
+	const hasPendingEditedChanges = Boolean(pendingEditedChanges && pendingEditedChanges.size > 0);
+
+	// Elapsed labels age ("now" becomes "2m"), so they need a clock - but a clock that ticks on
+	// every render would churn the memo identity and undo the paragraph above. One coarse tick a
+	// minute, and only while there is actually something on screen wearing a chip.
+	const [changeChipNow, setChangeChipNow] = React.useState(() => Date.now());
+	React.useEffect(() => {
+		if (!hasPendingEditedChanges) return;
+		setChangeChipNow(Date.now());
+		const interval = window.setInterval(() => setChangeChipNow(Date.now()), 60_000);
+		return () => window.clearInterval(interval);
+	}, [hasPendingEditedChanges]);
+
+	const changeChipRowsByNoteId = React.useMemo(() => {
+		const rows = new Map<string, { row: NoteChangeChipRow; label: string; overflowLabel: string }>();
+		if (!pendingEditedChanges || pendingEditedChanges.size === 0) return rows;
+
+		const fallbackName = t('note.changedBySomeone') || 'Someone';
+
+		for (const [noteId, change] of pendingEditedChanges) {
+			if (change.kind !== 'edited') continue;
+			if (change.contributors.length === 0) continue;
+			// Prefer the note's OWN collaborator snapshot: it is server-confirmed for this note and
+			// already loaded for every visible shared card, so it is both more accurate and more
+			// likely to be populated than the device-wide identity cache. Fall back to that cache,
+			// then to the avatar cache for a picture alone.
+			const collaborators = collaboratorSummariesByNoteId[noteId]?.collaborators ?? [];
+			const resolve = (userId: string): NoteChangeChipIdentity | null => {
+				const collaborator = collaborators.find((entry) => entry.userId === userId);
+				if (collaborator) {
+					return {
+						userId,
+						name: collaborator.name,
+						avatarUrl: collaborator.avatar ?? getCachedAvatarUrl(userId),
+					};
+				}
+				const known = resolveKnownUserById(userId);
+				if (known) {
+					return {
+						userId,
+						name: known.name || known.email,
+						avatarUrl: known.profileImage ?? getCachedAvatarUrl(userId),
+					};
+				}
+				const avatarUrl = getCachedAvatarUrl(userId);
+				return avatarUrl ? { userId, name: null, avatarUrl } : null;
+			};
+			const row = buildNoteChangeChipRow(change.contributors, {
+				resolve,
+				now: changeChipNow,
+				fallbackName,
+			});
+			if (row.chips.length === 0) continue;
+			const names = row.chips.map((chip) => chip.name).join(', ');
+			const overflowLabel = row.overflowCount > 0
+				? (t('note.changedByOverflow') || '+{count} more').replace('{count}', String(row.overflowCount))
+				: '';
+			const label = [
+				(t('note.changedBy') || 'Changed by {names}').replace('{names}', names),
+				overflowLabel,
+			].filter(Boolean).join(', ');
+			rows.set(noteId, { row, label, overflowLabel });
+		}
+		return rows;
+	}, [changeChipNow, collaboratorSummariesByNoteId, pendingEditedChanges, t]);
+
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
@@ -4747,6 +4888,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		}
 		const isSnapshotCard = !hasRenderableLiveDoc && Boolean(snapshotDoc);
 		const isPlaceholder = dragManager.activeDragId === note.id;
+		const changeChips = changeChipRowsByNoteId.get(note.id) ?? null;
 		const cachedMeasuredHeightPx = noteHeightByIdRef.current.get(note.id) ?? null;
 		const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 		const snapshotShell = workspaceRenderSnapshotNoteById.get(note.id) ?? null;
@@ -4844,6 +4986,9 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				isTrashView={isTrashView}
 				initialLinkRecords={initialLinkRecords}
 				preserveControlShell={isSnapshotCard}
+				changeChipRow={changeChips?.row}
+				changeChipLabel={changeChips?.label}
+				changeChipOverflowLabel={changeChips?.overflowLabel}
 				dropSettling={isDropSettling}
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
@@ -4911,7 +5056,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, documentPresenceVersion, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardFontScale, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, changeChipRowsByNoteId, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, documentPresenceVersion, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardFontScale, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -5205,6 +5350,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 										collectionPathById={collectionPathById}
 										labelById={labelById}
 										collaboratorCountByNoteId={collaboratorCountByNoteId}
+						changeChipRowsByNoteId={changeChipRowsByNoteId}
 										selectedNoteId={props.selectedNoteId}
 										moreMenuNoteId={moreMenuNoteId}
 										themeId={props.themeId}
@@ -5254,6 +5400,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 								collectionPathById={collectionPathById}
 								labelById={labelById}
 								collaboratorCountByNoteId={collaboratorCountByNoteId}
+						changeChipRowsByNoteId={changeChipRowsByNoteId}
 								selectedNoteId={props.selectedNoteId}
 								moreMenuNoteId={moreMenuNoteId}
 								themeId={props.themeId}

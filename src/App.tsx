@@ -182,10 +182,18 @@ import {
 	createEmptyPendingNoteChanges,
 	diffNoteIds,
 	pendingAddedNoteIds,
+	pendingEditedNoteChanges,
 	resolveNoteChange,
+	resolveNoteListChangeAuthor,
+	NOTE_ORDER_RECONCILE_ORIGIN,
 	summarisePendingNoteChanges,
 	type PendingNoteChangeState,
 } from './core/pendingNoteChanges';
+import {
+	clearAllPendingNoteChanges,
+	loadPendingEditedChanges,
+	savePendingEditedChanges,
+} from './core/pendingNoteChangeStore';
 import { clearAllNoteDigestShells } from './core/noteDigestStore';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
@@ -1255,6 +1263,30 @@ function writeSharedPlacementsCache(userId: string | null | undefined, placement
  * person.
  */
 const NOTE_CHANGE_ATTRIBUTION_WINDOW_MS = 15000;
+/**
+ * How long startup has to make NO forward progress before the splash says anything extra.
+ *
+ * Generous on purpose. Opening a cold workspace's note sockets takes 13-20s at the measured
+ * 2.5-4.3 handshakes/second, and during that whole time the count IS moving - so this should not
+ * fire. It is for genuine silence: a dead socket, a server that never answers.
+ */
+const STARTUP_STALL_NOTICE_MS = 12000;
+/**
+ * How long after a share action in THIS tab a placement reconcile still counts as the user's own.
+ *
+ * Generous, because accepting a share can involve a workspace switch and several requests before
+ * the note-order write lands - and being wrong in that direction means the note does not appear on
+ * the device you accepted it on, which is the exact symptom this exists to fix.
+ */
+const USER_INITIATED_PLACEMENT_WINDOW_MS = 30000;
+/**
+ * Quiet period on the note list before the pending set starts judging changes.
+ *
+ * After a cold start or a workspace switch the list fills in from IndexedDB and then from the
+ * server, and none of that is somebody else's work. Each change restarts this timer, so the arm
+ * waits for the trickle to stop rather than for a fixed budget to elapse.
+ */
+const PENDING_CHANGES_ARM_SETTLE_MS = 1200;
 
 const AUTH_TIMEOUT_RECOVERY_KEY = 'freemannotes.authTimeoutRecovery.v1';
 
@@ -2013,6 +2045,14 @@ export function App(): React.JSX.Element {
 	 *
 	 * See `src/core/pendingNoteChanges.ts` for the rules. Held per workspace by being cleared on
 	 * every switch, which is also one of the agreed flush points.
+	 *
+	 * The EDITED entries additionally survive a reload and a workspace switch, restored from
+	 * `pendingNoteChangeStore.ts`. That is a deliberate divergence from the plan's "reload flushes
+	 * everything": for an added or removed note, flushing on reload is right, because a reload
+	 * relays out the grid anyway and withholding a new note across reloads would hide it forever.
+	 * An edited note's change is ALREADY applied, so the pending entry carries nothing but the
+	 * attribution - and dropping that means a refresh silently wipes the chips off every card,
+	 * losing the one thing that cannot be reconstructed.
 	 */
 	const [pendingNoteChanges, setPendingNoteChanges] = React.useState<PendingNoteChangeState>(
 		() => createEmptyPendingNoteChanges()
@@ -2027,6 +2067,15 @@ export function App(): React.JSX.Element {
 	 * arrived within the window below, and is treated as somebody else's work if there is none.
 	 */
 	const noteOrderAttributionRef = React.useRef<{ byUserId: string | null; at: number } | null>(null);
+	/**
+	 * When the user last did something in THIS tab that a placement reconcile would carry out -
+	 * accepting a share, or leaving a note.
+	 *
+	 * The accepting device reconciles through exactly the same code path as every other device the
+	 * user has open, so the only thing that distinguishes it is that somebody pressed a button
+	 * here. Without this, the note appeared instantly on all of them.
+	 */
+	const userInitiatedPlacementChangeAtRef = React.useRef<number | null>(null);
 	/**
 	 * Whether the grid has finished its first paint.
 	 *
@@ -2044,12 +2093,21 @@ export function App(): React.JSX.Element {
 	 */
 	const [startupSyncStatus, setStartupSyncStatus] = React.useState<{
 		pending: number;
+		/** Notes whose real content has arrived. The only number the splash should count off. */
+		loaded: number;
 		totalOrdered: number;
 		registrySynced: boolean;
 		digestShellCount: number;
 		connectionState: string;
-	}>({ pending: 0, totalOrdered: 0, registrySynced: false, digestShellCount: 0, connectionState: '' });
-	/** Set once the splash has been up long enough that the connection is clearly the problem. */
+	}>({ pending: 0, loaded: 0, totalOrdered: 0, registrySynced: false, digestShellCount: 0, connectionState: '' });
+	/**
+	 * Set when startup has made NO forward progress for a while - not when a fixed budget elapses.
+	 *
+	 * It used to be a flat 8s timer saying "your connection looks slow", which fired on every cold
+	 * boot: opening 54 note sockets takes 13-20s at the measured 2.5-4.3 handshakes/second, so the
+	 * app was blaming the user's network for its own socket pacing. Reported from a gigabit wired
+	 * connection, which is exactly the case that proves the message was never about the connection.
+	 */
 	const [startupLooksSlow, setStartupLooksSlow] = React.useState(false);
 	const [importCompletedNotification, setImportCompletedNotification] = React.useState<{ count: number } | null>(null);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
@@ -2696,6 +2754,20 @@ export function App(): React.JSX.Element {
 		prevViewModeForSplashRef.current = viewMode;
 	}, [authWorkspaceId, bubbleZoom, deferredSearchQuery, selectedNoteId, sidebarView, viewMode]);
 	const activeGridViewMode = (viewMode === 'bubble' || viewMode === 'inbox') ? 'card' : viewMode;
+	/**
+	 * Is the note grid (card / list / strip) the surface currently on screen?
+	 *
+	 * Inbox, bubble, images and documents are all their own surfaces. Anything that only makes
+	 * sense alongside note cards - the pending-changes chip above all - has to be hidden on them.
+	 *
+	 * Deliberately ONE definition shared with the grid wrapper's own display rule below. It was
+	 * written out twice, and that is exactly how the chip ended up still showing in the inbox:
+	 * a view was added to one list and not the other.
+	 */
+	const isNoteGridSurfaceActive = viewMode !== 'bubble'
+		&& viewMode !== 'inbox'
+		&& sidebarView !== 'images'
+		&& sidebarView !== 'documents';
 	const scrollPersistTimerRef = React.useRef<number>(0);
 	const suppressWorkspaceScrollPersistUntilRef = React.useRef(0);
 	const handleListScrollAnchorApplied = React.useCallback(() => {
@@ -3263,6 +3335,9 @@ export function App(): React.JSX.Element {
 	// (see leaveSharedNoteFromMenu) — both need the exact same local cleanup once
 	// the server-side revoke has been requested (or queued for offline replay).
 	const finishLeavingSharedNote = React.useCallback((leftNoteAliasId: string) => {
+		// Same reasoning as accepting: leaving is a deliberate act here, so the reconciliation that
+		// follows it must not be announced back to the person who did it.
+		userInitiatedPlacementChangeAtRef.current = Date.now();
 		// Record this before any editor-close/modal-close below, which on mobile can
 		// trigger an async history.back() — the popstate guard needs this set
 		// populated before that popstate can possibly fire, not after. Plain
@@ -5796,6 +5871,8 @@ export function App(): React.JSX.Element {
 		clearSessionRestoreNote();
 		clearUserIdentityCache();
 		clearUserAvatarCache();
+		// Holds other people's user ids against note ids, so it goes with the identity caches.
+		clearAllPendingNoteChanges();
 		clearDrawingThumbnailLocalCache();
 		resetAttachedDrawingAccessRecovery();
 		clearWorkspaceOfflineEditMarkers();
@@ -7050,24 +7127,30 @@ export function App(): React.JSX.Element {
 	 * here changes at all, so without it the first stage of a cold boot would look stalled from
 	 * the very first tick.
 	 */
-	const startupProgressSignature = `${startupSyncStatus.registrySynced}|${startupSyncStatus.totalOrdered}|${startupSyncStatus.pending}|${startupSyncStatus.digestShellCount}|${startupSyncStatus.connectionState}`;
+	const startupProgressSignature = `${startupSyncStatus.registrySynced}|${startupSyncStatus.totalOrdered}|${startupSyncStatus.loaded}|${startupSyncStatus.digestShellCount}|${startupSyncStatus.connectionState}`;
 	const lastStartupProgressAtRef = React.useRef<number>(Date.now());
 	React.useEffect(() => {
 		lastStartupProgressAtRef.current = Date.now();
 	}, [startupProgressSignature]);
 
-	// "Your connection looks slow" is shown on a threshold rather than predicted from throughput.
-	// A wrong time estimate is worse than none, and early samples on a cold boot are far too
-	// unstable to extrapolate from — if we ever want a real estimate, it needs measurement first.
+	// The reassurance line appears when the count has STOPPED MOVING, not after a fixed wait.
+	//
+	// A fixed budget cannot tell "slow but working" from "stuck", and on a cold boot it is always
+	// still working - so the line fired every time and said something false about the user's
+	// connection. Watching the progress signature instead means it only appears when there is
+	// genuinely nothing happening, which is the only case worth saying anything about.
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
 		if (splashGone || gridReady) {
 			setStartupLooksSlow(false);
 			return;
 		}
-		const timerId = window.setTimeout(() => setStartupLooksSlow(true), 8000);
-		return () => window.clearTimeout(timerId);
-	}, [splashGone, gridReady]);
+		setStartupLooksSlow(false);
+		const intervalId = window.setInterval(() => {
+			setStartupLooksSlow(Date.now() - lastStartupProgressAtRef.current > STARTUP_STALL_NOTICE_MS);
+		}, 1000);
+		return () => window.clearInterval(intervalId);
+	}, [splashGone, gridReady, startupProgressSignature]);
 
 	/**
 	 * Watch the note list and record what other people change.
@@ -7087,7 +7170,7 @@ export function App(): React.JSX.Element {
 			if (cancelled || !noteOrder) return;
 			const readIds = (): string[] => noteOrder.toArray().filter((value): value is string => typeof value === 'string');
 			lastSeenNoteIdsRef.current = readIds();
-			const onChange = (): void => {
+			const onChange = (event: Y.YArrayEvent<string>): void => {
 				const next = readIds();
 				// Until the first paint is done, follow the list without judging it.
 				if (!pendingChangesArmedRef.current) {
@@ -7099,15 +7182,26 @@ export function App(): React.JSX.Element {
 					lastSeenNoteIdsRef.current = next;
 					return;
 				}
-				const attribution = noteOrderAttributionRef.current;
-				const fresh = attribution && Date.now() - attribution.at < NOTE_CHANGE_ATTRIBUTION_WINDOW_MS
-					? attribution
-					: null;
+				// `transaction.local` is what makes creating a note instant. A local write fires
+				// this observer immediately, while its attribution event is 10s behind it, so
+				// waiting for the server to say "that was you" withheld every note the user made
+				// from the user who made it. See resolveNoteListChangeAuthor.
+				const now = Date.now();
+				const byUserId = resolveNoteListChangeAuthor({
+					isLocalTransaction: event.transaction.local,
+					isServerReconcile: event.transaction.origin === NOTE_ORDER_RECONCILE_ORIGIN,
+					userInitiatedAt: userInitiatedPlacementChangeAtRef.current,
+					userActionWindowMs: USER_INITIATED_PLACEMENT_WINDOW_MS,
+					authUserId: authUserId ?? null,
+					attribution: noteOrderAttributionRef.current,
+					now,
+					windowMs: NOTE_CHANGE_ATTRIBUTION_WINDOW_MS,
+				});
 				setPendingNoteChanges((state) => applyNoteListDiff(state, {
 					added,
 					removed,
-					byUserId: fresh ? fresh.byUserId : null,
-					at: Date.now(),
+					byUserId,
+					at: now,
 					authUserId: authUserId ?? null,
 				}));
 				// Accounted for, so the next diff measures from here.
@@ -7122,28 +7216,128 @@ export function App(): React.JSX.Element {
 		};
 	}, [authStatus, authWorkspaceId, authUserId, manager]);
 
-	// Arm only once the splash has gone, so the startup fill-in is never mistaken for new arrivals.
+	/**
+	 * Arm the pending set once this workspace's note list has stopped filling in.
+	 *
+	 * **This effect is the SINGLE owner of `pendingChangesArmedRef`.** It used to be two effects -
+	 * one arming on `gridReady`, one disarming on a workspace switch - and that combination had a
+	 * bug that disabled the whole feature:
+	 *
+	 * On a switch into a workspace with a warm render snapshot, the splash code calls
+	 * `setGridReady(true)` when it is ALREADY true. React bails out, `gridReady` never changes
+	 * value, and so the arming effect (whose only dependency it was) never re-ran - while the
+	 * switch effect had already set the flag to false. One switch into a previously-visited
+	 * workspace and nothing was ever withheld again for the rest of the session. It looked
+	 * intermittent because a COLD workspace does toggle gridReady and does re-arm.
+	 *
+	 * The gate is now the registry being synced plus the list being quiet, which is what "the
+	 * startup fill-in has finished" actually means. `totalOrdered` is in the dependencies on
+	 * purpose: every change in the note count restarts the settle timer, so a slow trickle of
+	 * notes keeps deferring the arm instead of being counted as arrivals.
+	 */
 	React.useEffect(() => {
-		if (!gridReady) return;
-		pendingChangesArmedRef.current = true;
-	}, [gridReady]);
+		// Disarm first, unconditionally. A workspace switch re-runs this, and until the new
+		// workspace has settled its fill-in must not be mistaken for other people's work.
+		pendingChangesArmedRef.current = false;
+		if (typeof window === 'undefined') return;
+		if (!gridReady || !startupSyncStatus.registrySynced) return;
+		const timer = window.setTimeout(() => {
+			pendingChangesArmedRef.current = true;
+		}, PENDING_CHANGES_ARM_SETTLE_MS);
+		return () => window.clearTimeout(timer);
+	}, [gridReady, authWorkspaceId, startupSyncStatus.registrySynced, startupSyncStatus.totalOrdered]);
 
-	// A workspace switch is a flush point, and the pending set is per workspace anyway.
+	// A workspace switch is a flush point, and the pending set is per workspace anyway. Arming is
+	// NOT touched here - the effect above owns that flag.
 	const prevPendingWorkspaceRef = React.useRef<string | null>(authWorkspaceId);
 	React.useEffect(() => {
 		if (prevPendingWorkspaceRef.current === authWorkspaceId) return;
 		prevPendingWorkspaceRef.current = authWorkspaceId;
-		pendingChangesArmedRef.current = false;
 		noteOrderAttributionRef.current = null;
 		lastSeenNoteIdsRef.current = [];
 		setPendingNoteChanges((state) => clearPendingNoteChanges(state));
 	}, [authWorkspaceId]);
 
-	const [isPendingChangesOpen, setIsPendingChangesOpen] = React.useState(false);
-	// Nothing pending means nothing to show, so the popover must not survive a flush.
+	// ── Surviving a reload ────────────────────────────────────────────────────────────────────
+	//
+	// Which (user, workspace) the pending set in state currently belongs to. STATE, not a ref, and
+	// that is load-bearing: refs mutate synchronously during an effect pass, so a ref would let the
+	// save effect below fire in the same pass as a workspace switch, see the key already updated to
+	// the NEW workspace but `pendingNoteChanges` still holding the OLD one, and write one
+	// workspace's chips into the other's key. State updates batch, so the save effect only ever
+	// sees a scope and a set from the same render.
+	const [pendingChangesScope, setPendingChangesScope] = React.useState<string | null>(null);
+	const pendingChangesStorageKey = authStatus === 'authed' && authUserId && authWorkspaceId
+		? `${authUserId}::${authWorkspaceId}`
+		: null;
+
 	React.useEffect(() => {
-		if (pendingNoteChanges.size === 0) setIsPendingChangesOpen(false);
+		if (!pendingChangesStorageKey) {
+			// Signed out: forget the scope so signing back in rehydrates rather than trusting a
+			// set that belongs to the previous session.
+			setPendingChangesScope((current) => (current === null ? current : null));
+			return;
+		}
+		if (pendingChangesScope === pendingChangesStorageKey) return;
+		const restored = loadPendingEditedChanges(authUserId, authWorkspaceId);
+		setPendingChangesScope(pendingChangesStorageKey);
+		if (restored.size === 0) return;
+		setPendingNoteChanges((state) => {
+			// A live entry that arrived this session is fresher than anything on disk, so it wins.
+			const next = new Map(state);
+			for (const [noteId, change] of restored) {
+				if (!next.has(noteId)) next.set(noteId, change);
+			}
+			return next;
+		});
+	}, [authUserId, authWorkspaceId, pendingChangesScope, pendingChangesStorageKey]);
+
+	React.useEffect(() => {
+		if (!pendingChangesStorageKey) return;
+		if (pendingChangesScope !== pendingChangesStorageKey) return;
+		savePendingEditedChanges(authUserId, authWorkspaceId, pendingNoteChanges);
+	}, [authUserId, authWorkspaceId, pendingChangesScope, pendingChangesStorageKey, pendingNoteChanges]);
+
+	const [isPendingChangesOpen, setIsPendingChangesOpen] = React.useState(false);
+	const pendingChipWrapRef = React.useRef<HTMLDivElement | null>(null);
+	// Nothing WAITING means nothing to show, so the popover must not survive a flush. Keyed on the
+	// structural count rather than the map size: edited entries no longer show the chip, so a set
+	// holding only those would have kept an empty popover open behind a hidden chip.
+	React.useEffect(() => {
+		if (summarisePendingNoteChanges(pendingNoteChanges).structural === 0) setIsPendingChangesOpen(false);
 	}, [pendingNoteChanges]);
+
+	/**
+	 * Close the popover on a click anywhere else, and on Escape.
+	 *
+	 * `pointerdown` rather than `click`, so it closes on the press that begins an interaction
+	 * elsewhere instead of waiting for a click that may never arrive - a drag, or a tap the browser
+	 * decides was the start of a scroll and never synthesises a click for. That second case is a
+	 * documented trap in this codebase (see the media-sheet notes in CLAUDE.md), and a popover that
+	 * refuses to close is exactly how it shows up.
+	 *
+	 * The listener is only attached while the popover is open, so it costs nothing the rest of the
+	 * time. It is NOT on capture, so a control inside the popover handles its own press first.
+	 */
+	React.useEffect(() => {
+		if (!isPendingChangesOpen) return;
+		if (typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent | MouseEvent | TouchEvent): void => {
+			const wrap = pendingChipWrapRef.current;
+			const target = event.target;
+			if (wrap && target instanceof Node && wrap.contains(target)) return;
+			setIsPendingChangesOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setIsPendingChangesOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isPendingChangesOpen]);
 
 	/** Apply everything that was held back. */
 	const flushPendingNoteChanges = React.useCallback(() => {
@@ -7156,6 +7350,13 @@ export function App(): React.JSX.Element {
 	);
 	const withheldNoteIds = React.useMemo(
 		() => pendingAddedNoteIds(pendingNoteChanges),
+		[pendingNoteChanges]
+	);
+	// Edited notes are the opposite case to withheld ones: the change is already applied and the
+	// card stays live. All the grid needs is who did it, so it can explain a card that grew or
+	// shrank on its own instead of leaving it mysterious.
+	const pendingEditedChanges = React.useMemo(
+		() => pendingEditedNoteChanges(pendingNoteChanges),
 		[pendingNoteChanges]
 	);
 
@@ -7578,7 +7779,11 @@ export function App(): React.JSX.Element {
 						);
 						const expectedIdSet = new Set(expected.map((p) => p.aliasId));
 						const missing = expected.filter((p) => !currentRefSet.has(p.aliasId)).map((p) => p.aliasId);
-						if (missing.length > 0) await manager.addNoteReferences(missing);
+						// Tagged as a RECONCILE: this runs on every device the user has open, so writing
+						// it here does not mean the user accepted the share here. See
+						// NOTE_ORDER_RECONCILE_ORIGIN - without this, a note accepted on one device
+						// appeared instantly on all of them instead of being announced on the others.
+						if (missing.length > 0) await manager.addNoteReferences(missing, { origin: NOTE_ORDER_RECONCILE_ORIGIN });
 						// Never prune refs on a cycle where the placements fetch was
 						// unreliable (offline, or the request itself failed/timed out —
 						// see anyPlacementFetchFailed above). A prior version trusted an
@@ -7592,7 +7797,7 @@ export function App(): React.JSX.Element {
 						if (!offline && !activePlacementFetchFailed) {
 							const stale = currentRefs.filter((id) => !expectedIdSet.has(id));
 							if (stale.length > 0) {
-								await manager.removeNoteReferences(stale);
+								await manager.removeNoteReferences(stale, { origin: NOTE_ORDER_RECONCILE_ORIGIN });
 								// Color preferences are keyed by alias id, not the stable
 								// underlying docId (unlike pins, which key off docId and are
 								// safe to leave orphaned) — a re-share always mints a new
@@ -8007,6 +8212,7 @@ export function App(): React.JSX.Element {
 						workspaceId?: string | null;
 						docId?: string | null;
 						changedUserId?: string | null;
+						changedUserIds?: unknown;
 						profileImageUrl?: string | null;
 					};
 					// ── DEBUG: rate-track incoming metadata WS messages ──
@@ -8050,7 +8256,16 @@ export function App(): React.JSX.Element {
 					}
 					if (payload.type === 'workspace-metadata-changed' && payload.reason === 'note-changed') {
 						const changedDocId = typeof payload.docId === 'string' ? payload.docId : '';
-						const changedBy = typeof payload.changedUserId === 'string' ? payload.changedUserId : null;
+						// One event can cover several people: the server coalesces a note's edits
+						// over a 10s window, so A and B editing near each other arrive together.
+						// `changedUserIds` is all of them, most recent first; the singular field is
+						// the fallback for an older server that only sends one.
+						const changedByList: (string | null)[] = Array.isArray(payload.changedUserIds)
+							? payload.changedUserIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
+							: [];
+						if (changedByList.length === 0) {
+							changedByList.push(typeof payload.changedUserId === 'string' ? payload.changedUserId : null);
+						}
 						if (changedDocId && pendingChangesArmedRef.current) {
 							// The grid keys a note shared WITH you by its placement alias, not by the
 							// room it lives in - that room belongs to the owner's workspace. So the
@@ -8063,12 +8278,21 @@ export function App(): React.JSX.Element {
 								? aliasForRoom.aliasId
 								: (separatorIndex > 0 ? changedDocId.slice(separatorIndex + 1) : '');
 							if (gridNoteId) {
-								setPendingNoteChanges((state) => applyNoteEdited(state, {
-									noteId: gridNoteId,
-									byUserId: changedBy,
-									at: Date.now(),
-									authUserId: authUserId ?? null,
-								}));
+								const at = Date.now();
+								setPendingNoteChanges((state) => {
+									// Folded oldest-last so the contributor list ends up in the
+									// order the server sent, which is the order chips are drawn.
+									let next = state;
+									for (const byUserId of changedByList) {
+										next = applyNoteEdited(next, {
+											noteId: gridNoteId,
+											byUserId,
+											at,
+											authUserId: authUserId ?? null,
+										});
+									}
+									return next;
+								});
 							}
 						}
 					}
@@ -8527,6 +8751,10 @@ export function App(): React.JSX.Element {
 	);
 
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
+		// The user pressed Accept HERE, so the reconcile that follows is their action rather than an
+		// arrival - this is what keeps the accepting device instant while the user's other devices
+		// get the chip instead.
+		userInitiatedPlacementChangeAtRef.current = Date.now();
 		// Accepting into Shared With Me can require a workspace switch plus a sidebar
 		// reveal. We stage the reveal first, then let the activation path complete and
 		// the follow-up effect expands the correct folder once placements are loaded.
@@ -12053,9 +12281,9 @@ export function App(): React.JSX.Element {
 					    A bare spinner for the whole wait was the complaint. */}
 					{!gridReady ? (
 						<p className="splash-progress" role="status" aria-live="polite">
-							{startupSyncStatus.registrySynced && startupSyncStatus.totalOrdered > 0 && startupSyncStatus.pending > 0
+							{startupSyncStatus.registrySynced && startupSyncStatus.totalOrdered > 0 && startupSyncStatus.loaded < startupSyncStatus.totalOrdered
 								? t('app.splashSyncProgress')
-									.replace('{synced}', String(Math.max(0, startupSyncStatus.totalOrdered - startupSyncStatus.pending)))
+									.replace('{synced}', String(Math.min(startupSyncStatus.loaded, startupSyncStatus.totalOrdered)))
 									.replace('{total}', String(startupSyncStatus.totalOrdered))
 								: t('grid.loadingNotes')}
 						</p>
@@ -13016,19 +13244,19 @@ export function App(): React.JSX.Element {
 								    workspace chip, because that chip is not rendered at all once any
 								    filter is active - there would be nothing to attach to. Hidden
 								    while an editor is open so it never interrupts writing. */}
-								{pendingNoteChangeSummary.total > 0 && !isEditorOverlayOpen ? (
-									<div className="note-grid-pending-wrap">
+								{pendingNoteChangeSummary.structural > 0 && !isEditorOverlayOpen && isNoteGridSurfaceActive ? (
+									<div className="note-grid-pending-wrap" ref={pendingChipWrapRef}>
 										<div
 											// Remounting on each count change restarts the one-shot pulse
 											// without needing a looping animation, which would be exactly the
 											// "loud" this is meant to avoid.
-											key={pendingNoteChangeSummary.total}
+											key={pendingNoteChangeSummary.structural}
 											className="note-grid-scope-chip is-interactive note-grid-pending-chip"
 											role="button"
 											tabIndex={0}
 											aria-haspopup="dialog"
 											aria-expanded={isPendingChangesOpen}
-											aria-label={t('grid.pendingChangesAria').replace('{count}', String(pendingNoteChangeSummary.total))}
+											aria-label={t('grid.pendingChangesAria').replace('{count}', String(pendingNoteChangeSummary.structural))}
 											onClick={() => setIsPendingChangesOpen((open) => !open)}
 											onKeyDown={(event) => {
 												if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -13037,15 +13265,14 @@ export function App(): React.JSX.Element {
 											}}
 										>
 											<FontAwesomeIcon icon={faArrowsRotate} />
-											<span className="note-grid-pending-count">{pendingNoteChangeSummary.total}</span>
+											<span className="note-grid-pending-count">{pendingNoteChangeSummary.structural}</span>
 										</div>
 										{isPendingChangesOpen ? (
 											<div className="note-grid-pending-panel" role="dialog" aria-label={t('grid.pendingChangesTitle')}>
 												<p className="note-grid-pending-breakdown">
 													{t('grid.pendingChangesBreakdown')
 														.replace('{new}', String(pendingNoteChangeSummary.added))
-														.replace('{removed}', String(pendingNoteChangeSummary.removed))
-														.replace('{edited}', String(pendingNoteChangeSummary.edited))}
+														.replace('{removed}', String(pendingNoteChangeSummary.removed))}
 												</p>
 												<button
 													type="button"
@@ -13160,7 +13387,7 @@ export function App(): React.JSX.Element {
 					</section>
 
 				{/* NoteGrid stays mounted in bubble/inbox mode (display:none) so DocumentManager keeps docs loaded. */}
-				<div style={{ display: viewMode === 'bubble' || viewMode === 'inbox' || sidebarView === 'images' || sidebarView === 'documents' ? 'none' : undefined, position: 'relative' }}>
+				<div style={{ display: isNoteGridSurfaceActive ? undefined : 'none', position: 'relative' }}>
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
@@ -13268,6 +13495,7 @@ export function App(): React.JSX.Element {
 						loadDrawingDoc={loadDrawingDoc}
 						isPostImportSync={authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId}
 						withheldNoteIds={withheldNoteIds}
+						pendingEditedChanges={pendingEditedChanges}
 						onAllDocsLoaded={() => {
 							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
 								setPendingImportWorkspaceId(null);
@@ -13281,6 +13509,7 @@ export function App(): React.JSX.Element {
 							if (detail) {
 								setStartupSyncStatus({
 									pending,
+									loaded: detail.loaded,
 									totalOrdered: detail.totalOrdered,
 									registrySynced: detail.registrySynced,
 									digestShellCount: detail.digestShellCount,

@@ -94,7 +94,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 	},
 	app: {
 		splashSyncProgress: '{synced} of {total} notes loaded',
-		splashSlowConnection: 'Your connection looks slow — this may take a moment.',
+		splashSlowConnection: 'Still waiting on the server — hang on.',
 		newTextNote: 'New Text Note',
 		newChecklist: 'New Checklist',
 		loadingEditor: 'Loading editor…',
@@ -1041,11 +1041,14 @@ const FALLBACK_MESSAGES: Dictionary = {
 	note: {
 		untitled: '(untitled)',
 		pendingSync: 'Pending sync',
+		changedBy: 'Changed by {names}',
+		changedBySomeone: 'Someone',
+		changedByOverflow: '+{count} more',
 	},
 	grid: {
 		pendingChangesAria: '{count} changes from other people you have not seen yet',
-		pendingChangesShow: 'Show changes',
-		pendingChangesBreakdown: '{new} new · {removed} removed · {edited} edited',
+		pendingChangesShow: 'Apply changes',
+		pendingChangesBreakdown: '{new} new · {removed} removed',
 		pendingChangesTitle: 'Changes from other people',
 		loadingNotes: 'Loading notes…',
 		notes: 'Notes',

@@ -31,6 +31,8 @@ import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
 import { FLIP_SETTLE_MS, applyDocumentFlipAnimations, applyFlipFromViewportSnapshot, clearFlipStyles, measureDocumentRects, type DocumentRectMap } from './flip';
 import { applyListScrollAnchorOnce, applyListScrollAnchorToRow, findListRowByNoteId, type ListScrollAnchor } from './listScrollAnchor';
+import { NoteChangeOverlay } from '../NoteCard/NoteChangeOverlay';
+import type { NoteChangeChipRow } from '../../core/noteChangeChips';
 import styles from './NoteListView.module.css';
 
 const LIST_ROW_GAP_PX = 2;
@@ -54,6 +56,14 @@ export type NoteListViewProps = {
 	labelById: Map<string, LabelRecord>;
 	/** noteId → collaborator count (0 = none) */
 	collaboratorCountByNoteId: Record<string, number>;
+	/**
+	 * noteId → who changed it since the user last looked, already resolved and capped.
+	 *
+	 * Built once by NoteGrid and shared with grid view, so list and card view can never disagree
+	 * about who changed what, and so NoteRow's memoisation is not defeated by a fresh object per
+	 * render.
+	 */
+	changeChipRowsByNoteId?: ReadonlyMap<string, { row: NoteChangeChipRow; label: string; overflowLabel: string }>;
 	selectedNoteId: string | null;
 	moreMenuNoteId: string | null;
 	themeId: ThemeId;
@@ -119,6 +129,8 @@ type NoteRowProps = {
 	collectionPath: string | null;
 	labels: LabelRecord[];
 	collaboratorCount: number;
+	/** Who changed this note since the user last looked. Absent for the usual case. */
+	changeChips: { row: NoteChangeChipRow; overflowLabel: string } | null;
 	isSelected: boolean;
 	isMoreMenuOpen: boolean;
 	isPlaceholder: boolean;
@@ -330,6 +342,17 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 					<FontAwesomeIcon icon={faEllipsisVertical} />
 				</button>
 			)}
+
+			{/* Last child so it paints over the row it is shading, and absolutely positioned so it
+			    cannot affect row height. Not in trash view, which has its own dim treatment and a
+			    restore button that must stay clear. */}
+			{props.changeChips && !props.isTrashView ? (
+				<NoteChangeOverlay
+					variant="row"
+					row={props.changeChips.row}
+					overflowLabel={props.changeChips.overflowLabel}
+				/>
+			) : null}
 		</div>
 	);
 });
@@ -540,6 +563,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 					.map((labelId) => props.labelById.get(labelId) ?? null)
 					.filter((label): label is LabelRecord => Boolean(label));
 				const collaboratorCount = props.collaboratorCountByNoteId[noteId] ?? 0;
+				const changeChips = props.changeChipRowsByNoteId?.get(noteId) ?? null;
 
 				return (
 					<NoteRow
@@ -550,6 +574,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 						collectionPath={collectionPath}
 						labels={labels}
 						collaboratorCount={collaboratorCount}
+						changeChips={changeChips}
 						isSelected={props.selectedNoteId === noteId}
 						isMoreMenuOpen={props.moreMenuNoteId === noteId}
 						isPlaceholder={props.activeDragId === noteId}

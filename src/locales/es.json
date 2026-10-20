@@ -18,7 +18,7 @@
   },
   "app": {
     "splashSyncProgress": "{synced} de {total} notas cargadas",
-    "splashSlowConnection": "Tu conexión parece lenta: esto puede tardar un momento.",
+    "splashSlowConnection": "Seguimos esperando al servidor: un momento.",
     "newTextNote": "Nueva nota de texto",
     "newChecklist": "Nueva lista",
     "loadingEditor": "Cargando editor…",
@@ -939,12 +939,15 @@
   },
   "note": {
     "untitled": "(sin título)",
-    "pendingSync": "Sincronización pendiente"
+    "pendingSync": "Sincronización pendiente",
+    "changedBy": "Modificada por {names}",
+    "changedBySomeone": "Alguien",
+    "changedByOverflow": "+{count} más"
   },
   "grid": {
     "pendingChangesAria": "{count} cambios de otras personas que aún no has visto",
-    "pendingChangesShow": "Mostrar cambios",
-    "pendingChangesBreakdown": "{new} nuevas · {removed} eliminadas · {edited} editadas",
+    "pendingChangesShow": "Aplicar cambios",
+    "pendingChangesBreakdown": "{new} nuevas · {removed} eliminadas",
     "pendingChangesTitle": "Cambios de otras personas",
     "loadingNotes": "Cargando notas…",
     "notes": "Notas",
