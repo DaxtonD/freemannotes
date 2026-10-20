@@ -111,19 +111,47 @@ describe('coalescing', () => {
 		await sleep(60);
 		assert.equal(emitted.length, 1, '25 keystrokes produced one event');
 		assert.equal(emitted[0].changedUserId, ALICE);
+		assert.deepEqual(emitted[0].changedUserIds, [ALICE]);
 		assert.equal(emitted[0].docId, `${WS}:${NOTE}`);
 		assert.equal(emitted[0].workspaceId, WS);
 		assert.equal(emitted[0].reason, 'note-changed');
 		notifier.dispose();
 	});
 
-	it('names the LAST writer when two people touch the same note', async () => {
+	it('names EVERY writer when two people touch the same note', async () => {
+		// The bug this replaced: the pending entry did `existing.userId = userId`, so a burst
+		// covering two people was attributed to whoever typed last and the other was deleted on the
+		// server, where no client could recover them. Found in a real three-user test - the third
+		// user saw a chip for one of the two editors, never both.
 		const { notifier, emitted } = harness();
 		notifier.recordChange(`${WS}:${NOTE}`, ALICE);
 		notifier.recordChange(`${WS}:${NOTE}`, BOB);
 		await sleep(60);
+		assert.equal(emitted.length, 1, 'still ONE event - coalescing is not what changed');
+		assert.deepEqual(emitted[0].changedUserIds, [BOB, ALICE], 'most recent first');
+		assert.equal(emitted[0].changedUserId, BOB, 'singular field still the latest, for compatibility');
+		notifier.dispose();
+	});
+
+	it('lists a repeat editor once, at their latest position', async () => {
+		const { notifier, emitted } = harness();
+		notifier.recordChange(`${WS}:${NOTE}`, ALICE);
+		notifier.recordChange(`${WS}:${NOTE}`, BOB);
+		notifier.recordChange(`${WS}:${NOTE}`, ALICE);
+		await sleep(60);
 		assert.equal(emitted.length, 1);
-		assert.equal(emitted[0].changedUserId, BOB);
+		assert.deepEqual(emitted[0].changedUserIds, [ALICE, BOB], 'Alice typed last, so she leads');
+		notifier.dispose();
+	});
+
+	it('keeps all three actors through a burst', async () => {
+		const { notifier, emitted } = harness();
+		notifier.recordChange(`${WS}:${NOTE}`, ALICE);
+		notifier.recordChange(`${WS}:${NOTE}`, BOB);
+		notifier.recordChange(`${WS}:${NOTE}`, 'user-carol');
+		await sleep(60);
+		assert.equal(emitted.length, 1);
+		assert.deepEqual(emitted[0].changedUserIds, ['user-carol', BOB, ALICE]);
 		notifier.dispose();
 	});
 

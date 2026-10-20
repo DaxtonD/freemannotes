@@ -82,6 +82,7 @@ const decoding = require('lib0/decoding');
 const { getYDoc, docs, getPersistence } = require('y-websocket/bin/utils');
 const {
 	normalizeWorkspaceMetadataEvent,
+	toClientMetadataPayload,
 	publishWorkspaceMetadataEvent,
 	subscribeToWorkspaceMetadataEvents,
 } = require('./server/workspaceMetadataEvents');
@@ -1356,15 +1357,9 @@ function broadcastWorkspaceMetadataChanged(rawEvent) {
 	const event = normalizeWorkspaceMetadataEvent(rawEvent);
 	if (!event) return;
 	const allowedUserIds = event.userIds.length > 0 ? new Set(event.userIds) : null;
-	const payload = JSON.stringify({
-		type: 'workspace-metadata-changed',
-		reason: event.reason,
-		workspaceId: event.workspaceId,
-		docId: event.docId,
-		changedUserId: event.changedUserId,
-		profileImageUrl: event.profileImageUrl,
-		occurredAt: event.occurredAt,
-	});
+	// Field list lives with the normaliser in server/workspaceMetadataEvents.js, not here - when it
+	// was inline, adding a field to the event shape left the wire silently behind.
+	const payload = JSON.stringify(toClientMetadataPayload(event));
 	for (const ws of metadataWss.clients) {
 		if (ws.readyState !== WebSocket.OPEN) continue;
 		const session = metadataClientSessionMap.get(ws);

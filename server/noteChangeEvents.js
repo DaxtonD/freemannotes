@@ -27,6 +27,10 @@
  * - **With a maximum wait**, because somebody typing continuously for two minutes never pauses,
  *   and without it the event would never fire at all.
  *
+ * Coalescing means a single event can cover edits by SEVERAL people, so the event carries
+ * `changedUserIds` - all of them, most recent first - and not just the last one. Reporting only
+ * the last writer is information the server throws away that nothing downstream can recover.
+ *
  * ## Who receives it
  *
  * Workspace members. The `userIds` field on the event is a recipient filter, and leaving it empty
@@ -171,6 +175,14 @@ function createNoteChangeNotifier(options = {}) {
 
 	/** docName -> pending announcement */
 	const pending = new Map();
+	/**
+	 * Monotonic tick, used to order the actors in a burst.
+	 *
+	 * NOT `Date.now()`: several updates routinely land inside the same millisecond, which makes a
+	 * timestamp sort a tie and silently falls back to insertion order - so the chips would be drawn
+	 * oldest-first exactly when edits arrive fastest. A counter is ordered by construction.
+	 */
+	let actorSequence = 0;
 	/** workspaceId -> { userIds, expiresAt } */
 	const memberCache = new Map();
 	/** docName -> { userIds, expiresAt } */
@@ -240,11 +252,18 @@ function createNoteChangeNotifier(options = {}) {
 		if (recipients.size === 0) return;
 		const userIds = [...recipients];
 
+		// Most recent first, which is the order the card's chips are drawn in.
+		const changedUserIds = [...entry.actors.entries()]
+			.sort((left, right) => right[1].seq - left[1].seq)
+			.map(([actorId]) => actorId);
+
 		emit({
 			reason: entry.reason,
 			workspaceId: entry.workspaceId,
 			docId: docName,
-			changedUserId: entry.userId,
+			// Kept as the most recent actor so anything reading the singular field still works.
+			changedUserId: changedUserIds[0] ?? null,
+			changedUserIds,
 			userIds,
 			occurredAt: new Date(entry.lastAt).toISOString(),
 		});
@@ -264,9 +283,15 @@ function createNoteChangeNotifier(options = {}) {
 		const now = Date.now();
 		const existing = pending.get(docName);
 		if (existing) {
-			// Last writer wins for attribution: whoever most recently touched it is who the chip
-			// should name.
-			existing.userId = userId;
+			// EVERY actor in the burst, not just the latest.
+			//
+			// This used to be `existing.userId = userId` - last writer wins - which was fine while
+			// a client could only remember one editor per note. It is not fine now that cards show
+			// a chip per person: with a 10s debounce and a 60s ceiling, two people editing the same
+			// note anywhere near each other coalesce into ONE event, and attributing it to whoever
+			// happened to type last silently deleted the other one. Reported from a real
+			// three-user test: C saw a chip for one of A and B, never both.
+			existing.actors.set(userId, { at: now, seq: ++actorSequence });
 			existing.reason = reason;
 			existing.lastAt = now;
 			if (existing.timer) clearTimeout(existing.timer);
@@ -276,7 +301,8 @@ function createNoteChangeNotifier(options = {}) {
 		}
 
 		const entry = {
-			userId,
+			/** userId -> the last moment they touched it in this burst, and in what order. */
+			actors: new Map([[userId, { at: now, seq: ++actorSequence }]]),
 			reason,
 			workspaceId: parsed.workspaceId,
 			firstAt: now,

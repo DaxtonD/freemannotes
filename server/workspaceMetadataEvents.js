@@ -15,6 +15,12 @@ function normalizeWorkspaceMetadataEvent(raw) {
 		workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : null,
 		docId: typeof raw.docId === 'string' ? raw.docId : null,
 		changedUserId: typeof raw.changedUserId === 'string' ? raw.changedUserId : null,
+		// All actors in a coalesced note-change burst, most recent first. Must be carried through
+		// here or the Redis path silently degrades to single attribution while the direct in-process
+		// path keeps all of it - a difference that would only show up on a multi-instance deploy.
+		changedUserIds: Array.isArray(raw.changedUserIds)
+			? raw.changedUserIds.filter((value) => typeof value === 'string' && value.length > 0)
+			: [],
 		profileImageUrl: typeof raw.profileImageUrl === 'string' ? raw.profileImageUrl : null,
 		userIds: Array.isArray(raw.userIds)
 			? raw.userIds.filter((value) => typeof value === 'string' && value.length > 0)
@@ -23,6 +29,35 @@ function normalizeWorkspaceMetadataEvent(raw) {
 		occurredAt: typeof raw.occurredAt === 'string' ? raw.occurredAt : new Date().toISOString(),
 	};
 	return event;
+}
+
+/**
+ * The event as a browser receives it.
+ *
+ * This used to be an inline object literal in `server.js`'s broadcast function - a hand-written
+ * allow-list of fields, forty lines away from the normaliser that defines the shape. Adding
+ * `changedUserIds` to the normaliser and to the Redis publisher was therefore not enough: the
+ * socket serialiser silently dropped it, so the server computed the full list of people who
+ * changed a note and then threw all but one away on the last line before the wire. Measured, after
+ * a passing unit test on the emitting side had said it worked.
+ *
+ * It lives here now so the wire contract sits beside the shape it serialises, and so it can be
+ * tested without starting a server.
+ *
+ * `userIds` is deliberately NOT included: it is the recipient filter the broadcaster uses to decide
+ * who to send to, and shipping it would hand every recipient the list of everyone else with access.
+ */
+function toClientMetadataPayload(event) {
+	return {
+		type: 'workspace-metadata-changed',
+		reason: event.reason,
+		workspaceId: event.workspaceId,
+		docId: event.docId,
+		changedUserId: event.changedUserId,
+		changedUserIds: event.changedUserIds,
+		profileImageUrl: event.profileImageUrl,
+		occurredAt: event.occurredAt,
+	};
 }
 
 // Publish only normalized events so every subscriber sees consistent fields even if
@@ -70,6 +105,7 @@ async function subscribeToWorkspaceMetadataEvents(redisSubscriber, onEvent) {
 module.exports = {
 	WORKSPACE_METADATA_CHANNEL,
 	normalizeWorkspaceMetadataEvent,
+	toClientMetadataPayload,
 	publishWorkspaceMetadataEvent,
 	subscribeToWorkspaceMetadataEvents,
 };
