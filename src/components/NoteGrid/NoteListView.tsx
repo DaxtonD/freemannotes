@@ -31,8 +31,7 @@ import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
 import { FLIP_SETTLE_MS, applyDocumentFlipAnimations, applyFlipFromViewportSnapshot, clearFlipStyles, measureDocumentRects, type DocumentRectMap } from './flip';
 import { applyListScrollAnchorOnce, applyListScrollAnchorToRow, findListRowByNoteId, type ListScrollAnchor } from './listScrollAnchor';
-import { NoteChangeOverlay } from '../NoteCard/NoteChangeOverlay';
-import type { NoteChangeChipRow } from '../../core/noteChangeChips';
+import { NoteChangeOverlay, type NoteChangeOverlayDescriptor } from '../NoteCard/NoteChangeOverlay';
 import styles from './NoteListView.module.css';
 
 const LIST_ROW_GAP_PX = 2;
@@ -63,7 +62,7 @@ export type NoteListViewProps = {
 	 * about who changed what, and so NoteRow's memoisation is not defeated by a fresh object per
 	 * render.
 	 */
-	changeChipRowsByNoteId?: ReadonlyMap<string, { row: NoteChangeChipRow; label: string; overflowLabel: string }>;
+	changeChipRowsByNoteId?: ReadonlyMap<string, NoteChangeOverlayDescriptor>;
 	selectedNoteId: string | null;
 	moreMenuNoteId: string | null;
 	themeId: ThemeId;
@@ -130,7 +129,7 @@ type NoteRowProps = {
 	labels: LabelRecord[];
 	collaboratorCount: number;
 	/** Who changed this note since the user last looked. Absent for the usual case. */
-	changeChips: { row: NoteChangeChipRow; overflowLabel: string } | null;
+	changeChips: NoteChangeOverlayDescriptor | null;
 	isSelected: boolean;
 	isMoreMenuOpen: boolean;
 	isPlaceholder: boolean;
@@ -351,6 +350,11 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 					variant="row"
 					row={props.changeChips.row}
 					overflowLabel={props.changeChips.overflowLabel}
+					kind={props.changeChips.kind}
+					// The short verb, because a row has no space for "deleted this note" - it has
+					// already given up the name for the same reason.
+					removedLabel={props.changeChips.removedVerbShort}
+					removedFallbackLabel={props.changeChips.removedFallbackLabel}
 				/>
 			) : null}
 		</div>

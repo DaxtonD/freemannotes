@@ -943,7 +943,15 @@
     "pendingSync": "Pending sync",
     "changedBy": "Changed by {names}",
     "changedBySomeone": "Someone",
-    "changedByOverflow": "+{count} more"
+    "changedByOverflow": "+{count} more",
+    "removedBy": "{name} deleted this note",
+    "removedVerb": "deleted this note",
+    "removedVerbShort": "deleted",
+    "removedUnattributed": "This note was deleted",
+    "removedRevokedBy": "{name} revoked your access",
+    "removedRevokedVerb": "revoked your access",
+    "removedRevokedVerbShort": "access revoked",
+    "removedRevokedUnattributed": "Your access was revoked"
   },
   "grid": {
     "pendingChangesAria": "{count} changes from other people you have not seen yet",

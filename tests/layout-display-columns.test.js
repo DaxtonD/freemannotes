@@ -22,6 +22,9 @@ const {
 	dealIntoColumns,
 	findColumnNeighborAnchor,
 	applyTierReorderByInsertion,
+	applyTierReorderToCanonicalVisible,
+	mergeVisibleOrderIntoFullOrder,
+	reorderByInsertion,
 	resolveGridDropOrder,
 } = require('../src/components/NoteGrid/layout.ts');
 
@@ -344,5 +347,63 @@ describe('resolveGridDropOrder', () => {
 
 	it('returns null when the columns and the dealt order disagree about which notes exist', () => {
 		assert.equal(resolve(['A', 'B', 'C'], [['A', 'C'], ['B', 'Z']], 'A'), null);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A tier reorder must never INTRODUCE a note.
+//
+// Reachable through a real feature: a card held on the grid as a tombstone
+// (somebody else deleted it, the user has not applied the change yet) is in the
+// rendered columns on purpose and out of the canonical commit order on purpose.
+// Before these guards, a drag while one was held committed the dead note back
+// into the shared registry and pushed a live note out of the order to make room.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('applyTierReorderToCanonicalVisible ignores ids the canonical list does not hold', () => {
+	const unpinned = () => false;
+
+	it('does not let an on-screen-only id into the committed order', () => {
+		const result = applyTierReorderToCanonicalVisible(['A', 'B'], ['A', 'TOMB', 'B'], false, unpinned);
+		assert.deepEqual(result, ['A', 'B'], 'TOMB is not committed and B is not pushed out');
+	});
+
+	it('still applies a genuine reorder', () => {
+		const result = applyTierReorderToCanonicalVisible(['A', 'B', 'C'], ['C', 'A', 'B'], false, unpinned);
+		assert.deepEqual(result, ['C', 'A', 'B']);
+	});
+
+	it('leaves the other pin tier untouched', () => {
+		const isPinned = (id) => id === 'P';
+		const result = applyTierReorderToCanonicalVisible(['P', 'A', 'B'], ['B', 'TOMB', 'A'], false, isPinned);
+		assert.deepEqual(result, ['P', 'B', 'A']);
+	});
+});
+
+describe('reorderByInsertion reorders but never inserts', () => {
+	it('refuses to add an id that was not in the list', () => {
+		assert.deepEqual(reorderByInsertion(['A', 'B'], 'TOMB', 'A', true), ['A', 'B']);
+	});
+
+	it('still moves an id that IS in the list', () => {
+		assert.deepEqual(reorderByInsertion(['A', 'B', 'C'], 'C', 'A', false), ['C', 'A', 'B']);
+	});
+
+	it('leaves the list alone when the anchor is unknown', () => {
+		assert.deepEqual(reorderByInsertion(['A', 'B'], 'A', 'Z', true), ['A', 'B']);
+	});
+});
+
+describe('mergeVisibleOrderIntoFullOrder: why tombstones stay out of the commit order', () => {
+	it('APPENDS a visible id the full order does not contain', () => {
+		// Documenting the mechanism rather than asserting a wish: this is correct for its own
+		// contract, and it is exactly why a deleted id must never reach `visibleIds`.
+		const next = mergeVisibleOrderIntoFullOrder(['A', 'B'], ['A', 'B', 'TOMB'], ['A', 'B', 'TOMB']);
+		assert.deepEqual(next, ['A', 'B', 'TOMB']);
+	});
+
+	it('passes the full order through untouched when the visible set is clean', () => {
+		const next = mergeVisibleOrderIntoFullOrder(['A', 'B', 'hidden'], ['A', 'B'], ['B', 'A']);
+		assert.deepEqual(next, ['B', 'A', 'hidden']);
 	});
 });

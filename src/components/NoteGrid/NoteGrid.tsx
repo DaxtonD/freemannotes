@@ -92,12 +92,17 @@ import {
 	writeWorkspaceRenderSnapshot,
 } from '../../core/workspaceRenderSnapshot';
 import { digestShellCanRender } from '../../core/noteDigestProjection';
+import { readNoteCreatedBy, readNoteTrashedBy } from '../../core/noteModel';
 import {
 	buildNoteChangeChipRow,
 	type NoteChangeChipIdentity,
 	type NoteChangeChipRow,
 } from '../../core/noteChangeChips';
 import { NOTE_ORDER_RECONCILE_ORIGIN, type PendingNoteChange } from '../../core/pendingNoteChanges';
+import type {
+	NoteChangeOverlayDescriptor,
+	NoteChangeOverlayKind,
+} from '../NoteCard/NoteChangeOverlay';
 import { resolveKnownUserById } from '../../core/userIdentityCache';
 import { getCachedAvatarUrl } from '../../core/userAvatarCache';
 import { readNoteDigestShellById, subscribeNoteDigestShells } from '../../core/noteDigestStore';
@@ -134,7 +139,7 @@ import { NoteGridDebugOverlay } from './NoteGridDebugOverlay';
 import { NoteCardDiagnosticsOverlay } from './NoteCardDiagnosticsOverlay';
 import { GridScrollDiagnosticsOverlay } from './GridScrollDiagnosticsOverlay';
 import { SyncTimingDiagnosticsOverlay } from './SyncTimingDiagnosticsOverlay';
-import { recordSyncDiagMark } from '../../core/syncTimingDiagnostics';
+import { recordPendingChangeTrace, recordSyncDiagMark } from '../../core/syncTimingDiagnostics';
 import {
 	SCROLL_DIAG_ENABLED,
 	recordScrollDiagEstimate,
@@ -277,7 +282,35 @@ export type NoteGridProps = {
 	 * already applied. They just wear a scrim and a row of chips saying who did it, so a card that
 	 * grew or shrank on its own is explained rather than mysterious.
 	 */
-	pendingEditedChanges?: ReadonlyMap<string, PendingNoteChange>;
+	/**
+	 * Cards that should wear a change overlay: edited ones, and removed ones being held on the
+	 * grid as a dimmed tombstone. Keyed by note id; `kind` says which.
+	 */
+	pendingCardChanges?: ReadonlyMap<string, PendingNoteChange>;
+	/**
+	 * Ids that have LEFT the grid - trashed, deleted or revoked - but must keep rendering until the
+	 * user applies the change. Letting them vanish is what closes the gap up and moves everything
+	 * below them, which is the whole thing being prevented.
+	 */
+	heldRemovedNoteIds?: ReadonlySet<string>;
+	/**
+	 * A collaborator trashed a note. Reported from the metadata observer because a trashing never
+	 * reaches the note-list diff - see the observer for why it cannot wait for the server event.
+	 */
+	onNoteTrashedRemotely?: (noteId: string, context: {
+		isLocalTransaction: boolean;
+		origin: unknown;
+		/** `trashedByUserId` off the note, so the tombstone can name somebody immediately. */
+		actorUserId: string | null;
+	}) => void;
+	/**
+	 * A held note's own `createdByUserId` has become readable.
+	 *
+	 * Reported from here because the grid owns the loaded documents. It is what lets a note you
+	 * made on another device be released by DATA rather than by a timer - see
+	 * `resolveOwnPendingAdd`.
+	 */
+	onWithheldNoteAuthorKnown?: (noteId: string, authorUserId: string) => void;
 	/** Fires whenever pendingNoteWsSync changes value. */
 	/**
 	 * Fires whenever the number of note rooms still awaiting their first WS sync changes.
@@ -839,6 +872,9 @@ type GridNoteCardProps = {
 	changeChipRow?: NoteChangeChipRow | null;
 	changeChipLabel?: string;
 	changeChipOverflowLabel?: string;
+	changeChipKind?: NoteChangeOverlayKind;
+	changeChipRemovedLabel?: string;
+	changeChipRemovedFallbackLabel?: string;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	useWholeCardDragHandle?: boolean;
@@ -1243,6 +1279,9 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					changeChipRow={props.changeChipRow}
 					changeChipLabel={props.changeChipLabel}
 					changeChipOverflowLabel={props.changeChipOverflowLabel}
+					changeChipKind={props.changeChipKind}
+					changeChipRemovedLabel={props.changeChipRemovedLabel}
+					changeChipRemovedFallbackLabel={props.changeChipRemovedFallbackLabel}
 					dragHandleRef={props.useWholeCardDragHandle ? undefined : handleDragHandleRef}
 					useWholeCardDragHandle={props.useWholeCardDragHandle}
 				/>
@@ -1640,6 +1679,13 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	const pendingDocLoadsRef = React.useRef<Set<string>>(new Set());
 	const versionRef = React.useRef(0);
 	const [metadataVersion, setMetadataVersion] = React.useState(0);
+	// Held in a ref on purpose: the metadata observer effect above re-subscribes EVERY loaded
+	// note's map when its dependencies change, so taking the callback as a dependency would tear
+	// down and rebuild ninety-odd observers on any render that produced a new function identity.
+	const onNoteTrashedRemotelyRef = React.useRef(props.onNoteTrashedRemotely);
+	onNoteTrashedRemotelyRef.current = props.onNoteTrashedRemotely;
+	const onWithheldNoteAuthorKnownRef = React.useRef(props.onWithheldNoteAuthorKnown);
+	onWithheldNoteAuthorKnownRef.current = props.onWithheldNoteAuthorKnown;
 	const [layoutOrderIds, setLayoutOrderIds] = React.useState<string[]>([]);
 	// Lazy-initialize layout state from the current viewport so the very first render
 	// already uses the correct column count and card widths — eliminating the jarring
@@ -2441,9 +2487,64 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		const entries = Object.entries(docsById);
 		if (entries.length === 0) return;
 		const cleanups: Array<() => void> = [];
-		for (const [, doc] of entries) {
+		for (const [noteId, doc] of entries) {
 			const metadata = doc.getMap('metadata');
 			const handler = (event: Y.YMapEvent<unknown>): void => {
+				/**
+				 * Somebody else trashing this note is a REMOVAL, and this is the only moment it can
+				 * be caught.
+				 *
+				 * `trashNote` writes `metadata.trashed` and never touches `noteOrder`, so a
+				 * trashing does not show up in the note-list diff at all - it arrives here, as an
+				 * ordinary metadata change, and the card is then filtered out of `visibleIds`
+				 * downstream. The `note-changed` metadata event would also tell us, but it is
+				 * debounced 10s server-side: by then the card has already gone, and holding it
+				 * afterwards would bring it BACK from the dead ten seconds later, which is a worse
+				 * version of the jump this whole mechanism exists to prevent.
+				 *
+				 * So it has to be the instant the key flips, which means here, which means the
+				 * grid has to hand it upward - attribution and the pending set both live in App.
+				 */
+				/**
+				 * `action === 'update'` is the whole fix, and it is MEASURED rather than reasoned
+				 * (scratchpad probe, reproduced in tests/yjs-metadata-change-semantics.test.js):
+				 *
+				 *     cold load of an already-trashed note -> action 'add',    oldValue undefined
+				 *     a collaborator trashing it live      -> action 'update', oldValue false
+				 *
+				 * The old test was `keysChanged.has('trashed') && get('trashed') === true`, which
+				 * is true in BOTH cases - so on any cold start every note that was already in the
+				 * trash announced itself as a brand-new deletion. Seven of them came back as
+				 * tombstones after a cache clear, with a sync chip demanding a flush for removals
+				 * applied in an earlier session.
+				 *
+				 * Do not "simplify" this back to reading the current value. The key appearing and
+				 * the key changing are different events and only one of them is news.
+				 */
+				const trashedChange = event.changes.keys.get('trashed');
+				if (
+					trashedChange
+					&& trashedChange.action === 'update'
+					&& trashedChange.oldValue !== true
+					&& metadata.get('trashed') === true
+				) {
+					// Trashing came out non-deterministic in testing: sometimes a tombstone,
+					// sometimes the card simply disappearing with no chip at all. "No chip at all"
+					// means no entry was created, and several places could swallow it, so this says
+					// WHICH rather than inviting another guess from reading the source.
+					recordPendingChangeTrace('trash-observed', {
+						note: noteId.slice(0, 8),
+						local: event.transaction.local,
+						handler: Boolean(onNoteTrashedRemotelyRef.current),
+					});
+					onNoteTrashedRemotelyRef.current?.(noteId, {
+						isLocalTransaction: event.transaction.local,
+						origin: event.transaction.origin,
+						// Written in the same transaction as the flag, so it is already here. No
+						// waiting for the debounced event, and nothing to correlate by time.
+						actorUserId: readNoteTrashedBy(doc),
+					});
+				}
 				// Pin display is user-scoped via notePinPreferences; clearing legacy
 				// metadata.isPinned on pin toggle must not rebuild every card snapshot.
 				if (event.keysChanged.size === 1 && event.keysChanged.has('isPinned')) return;
@@ -2500,15 +2601,52 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	 * everything outside that subset through untouched. It is the same mechanism that already makes
 	 * dragging inside a search or collection filter safe.
 	 */
+	/**
+	 * The last order this memo produced, used ONLY to recover the position of an id that has since
+	 * left the registry. Assigned during render, which is safe here because it is a plain
+	 * assignment of the value being returned - re-running the memo produces the same answer.
+	 */
+	const lastOrderedIdsRef = React.useRef<string[]>([]);
 	const orderedIds = React.useMemo<string[]>(() => {
 		const withheld = props.withheldNoteIds;
-		if (!withheld || withheld.size === 0) return registryOrderedIds;
-		const selected = props.selectedNoteId;
-		const filtered = registryOrderedIds.filter((id) => !withheld.has(id) || id === selected);
-		// Same array identity when nothing was actually withheld, so the long memo chain below does
-		// not churn for the common case.
-		return filtered.length === registryOrderedIds.length ? registryOrderedIds : filtered;
-	}, [registryOrderedIds, props.withheldNoteIds, props.selectedNoteId]);
+		const held = props.heldRemovedNoteIds;
+		let result = registryOrderedIds;
+		if (withheld && withheld.size > 0) {
+			const selected = props.selectedNoteId;
+			const filtered = registryOrderedIds.filter((id) => !withheld.has(id) || id === selected);
+			// Same array identity when nothing was actually withheld, so the long memo chain below
+			// does not churn for the common case.
+			if (filtered.length !== registryOrderedIds.length) result = filtered;
+		}
+		/**
+		 * A note that was DELETED or whose share was REVOKED is gone from the registry entirely, so
+		 * it has to be put back or there is nothing to draw a tombstone from - and everything below
+		 * it closes up, which is the move being prevented.
+		 *
+		 * Trashing does not need this: the id stays in the registry and is only filtered out
+		 * downstream, handled by `keepNoteIds` on getVisibleNotes.
+		 */
+		if (held && held.size > 0) {
+			const present = new Set(result);
+			const missing = [...held].filter((id) => !present.has(id));
+			if (missing.length > 0) {
+				const previous = lastOrderedIdsRef.current;
+				const next = [...result];
+				// Ascending by old index, so each splice lands before the ones still to come and
+				// two adjacent removals do not swap places.
+				const byOldIndex = missing
+					.map((id) => ({ id, index: previous.indexOf(id) }))
+					.sort((left, right) => left.index - right.index);
+				for (const entry of byOldIndex) {
+					const at = entry.index < 0 ? next.length : Math.min(entry.index, next.length);
+					next.splice(at, 0, entry.id);
+				}
+				result = next;
+			}
+		}
+		lastOrderedIdsRef.current = result;
+		return result;
+	}, [registryOrderedIds, props.withheldNoteIds, props.heldRemovedNoteIds, props.selectedNoteId]);
 
 	const sharedPlacementByAlias = React.useMemo(
 		() => new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement] as const)),
@@ -2647,8 +2785,24 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		&& props.sortMode === 'manual'
 		&& props.sortGrouping === 'none';
 
-	const buildFilteredVisibleIds = React.useCallback((prioritizePinned: boolean): string[] => {
+	/**
+	 * `includeHeldRemoved` is false for the order that gets COMMITTED TO YJS.
+	 *
+	 * A tombstone is on screen but is not part of the note list any more (deleted, revoked) or is
+	 * not supposed to be in the visible order (trashed). Letting it into the commit order would
+	 * write it back into the shared registry - `mergeVisibleOrderIntoFullOrder` appends any visible
+	 * id it cannot find a slot for, which for a deleted note means resurrecting it for everybody.
+	 * Dragging ANY card while a tombstone was held would have done it, not just dragging the
+	 * tombstone itself.
+	 */
+	const buildFilteredVisibleIds = React.useCallback((
+		prioritizePinned: boolean,
+		includeHeldRemoved: boolean
+	): string[] => {
 		const ids = getVisibleNotes(noteSnapshots, {
+			// Held tombstones keep their sorted position by being exempted inside the filter,
+			// rather than spliced back in afterwards at a guessed index.
+			keepNoteIds: includeHeldRemoved ? props.heldRemovedNoteIds : undefined,
 			showTrashed: props.showTrashed,
 			showArchived: props.showArchived,
 			selectedCollectionId: props.activeCollectionId,
@@ -2676,23 +2830,38 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		// in-folder note doesn't get excluded during the brief cold-start window before
 		// props.sharedNotes has loaded at all — see that prop's own comment.
 		if (props.sharedPlacementsHydrated) {
-			mergedIds = mergedIds.filter((id) => !id.startsWith('shared-placement:') || sharedNoteIdSet.has(id));
+			/**
+			 * `keepHeld` is why a REVOKED share can still be drawn as a tombstone.
+			 *
+			 * This filter sits downstream of getVisibleNotes, so exempting a held id inside that
+			 * function was not enough: a revoked placement is precisely an id that has left
+			 * `sharedNoteIdSet`, so it got dropped here a moment later and the card vanished
+			 * instantly - no dimming, no chip. Found in testing, and it is the one place where
+			 * the two filters disagreed about what "gone" means.
+			 */
+			const keepHeld = includeHeldRemoved ? props.heldRemovedNoteIds : undefined;
+			mergedIds = mergedIds.filter((id) => (
+				!id.startsWith('shared-placement:')
+				|| sharedNoteIdSet.has(id)
+				|| keepHeld?.has(id) === true
+			));
 		}
 		if (props.hiddenNoteId) return mergedIds.filter((id) => id !== props.hiddenNoteId);
 		// ^ Suppress the draft note ID from the visible list so it never renders as
 		//   an empty card while the user is composing it in the editor overlay.
 		return mergedIds;
-	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.sharedPlacementsHydrated, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode, sharedNoteIdSet]);
+	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeLabelIds, props.heldRemovedNoteIds, props.hiddenNoteId, props.reminderFilter, props.sharedPlacementsHydrated, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode, sharedNoteIdSet]);
 
 	const baseVisibleIds = React.useMemo<string[]>(
-		() => buildFilteredVisibleIds(shouldPrioritizePinnedForDisplay),
+		() => buildFilteredVisibleIds(shouldPrioritizePinnedForDisplay, true),
 		[buildFilteredVisibleIds, shouldPrioritizePinnedForDisplay]
 	);
 
 	// Same visible set as baseVisibleIds but preserves manual/canonical sequence
 	// (no pinnedFirst). Required for tier-local drag commits into Yjs noteOrder.
+	// No held tombstones: this is what a drag commits to Yjs. See buildFilteredVisibleIds.
 	const canonicalVisibleIds = React.useMemo<string[]>(
-		() => buildFilteredVisibleIds(false),
+		() => buildFilteredVisibleIds(false, false),
 		[buildFilteredVisibleIds]
 	);
 
@@ -3155,7 +3324,23 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 
 	React.useEffect(() => {
 		if (!noteOrder) return;
-		for (const id of orderedIds) {
+		/**
+		 * WITHHELD ids are loaded too, and that is load-bearing rather than tidy-minded.
+		 *
+		 * `orderedIds` has them filtered out (that is what withholding means), and this loop is
+		 * what opens a note's document - so a held note's own `createdByUserId` was unreadable,
+		 * and the whole point of recording the author was unreachable on exactly the path it
+		 * exists for: a note you made on another device.
+		 *
+		 * Loading is not rendering. `noteSnapshots`, `visibleIds` and `allDocsLoaded` are all
+		 * derived from `orderedIds`, so a held note still draws nothing and still does not count
+		 * towards the startup gates. It just becomes possible to ask who made it.
+		 */
+		const withheldIds = props.withheldNoteIds;
+		const idsToLoad = withheldIds && withheldIds.size > 0
+			? uniqueIds([...orderedIds, ...withheldIds])
+			: orderedIds;
+		for (const id of idsToLoad) {
 			// Shared-note ids only resolve to the right room once DocumentManager's
 			// alias map is populated (set by refreshNoteShareState in App.tsx, after
 			// an async placements fetch). Attempting getDocWithSync before that is
@@ -3193,7 +3378,27 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 					pendingDocLoadsRef.current.delete(id);
 				});
 		}
-	}, [manager, noteOrder, orderedIds, sharedAliasSignature, sharedNoteIdSet]);
+	}, [manager, noteOrder, orderedIds, props.withheldNoteIds, sharedAliasSignature, sharedNoteIdSet]);
+
+	/**
+	 * Tell App who made each held note, as soon as the note itself can say.
+	 *
+	 * `metadataVersion` is in the dependencies on purpose: a document can load from IndexedDB
+	 * before the server's copy arrives, so the author may be unreadable on the first pass and
+	 * readable a moment later. That bump is what re-asks. It is a data arrival, not a retry timer.
+	 */
+	React.useEffect(() => {
+		const withheld = props.withheldNoteIds;
+		if (!withheld || withheld.size === 0) return;
+		const report = onWithheldNoteAuthorKnownRef.current;
+		if (!report) return;
+		for (const id of withheld) {
+			const doc = docsById[id] ?? manager.peekDoc(id);
+			if (!doc) continue;
+			const author = readNoteCreatedBy(doc);
+			if (author) report(id, author);
+		}
+	}, [props.withheldNoteIds, docsById, manager, metadataVersion]);
 
 	// ── Report which notes are on screen, so they are the ones that connect ──
 	//
@@ -4802,29 +5007,49 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	// because GridNoteCard is memoised on prop identity: a fresh row object per card per render
 	// would defeat that for every card in the grid, changed or not. Cards with nothing pending get
 	// `undefined`, which is stable.
-	const pendingEditedChanges = props.pendingEditedChanges;
-	const hasPendingEditedChanges = Boolean(pendingEditedChanges && pendingEditedChanges.size > 0);
+	const pendingCardChanges = props.pendingCardChanges;
+	const hasPendingCardChanges = Boolean(pendingCardChanges && pendingCardChanges.size > 0);
 
 	// Elapsed labels age ("now" becomes "2m"), so they need a clock - but a clock that ticks on
 	// every render would churn the memo identity and undo the paragraph above. One coarse tick a
 	// minute, and only while there is actually something on screen wearing a chip.
 	const [changeChipNow, setChangeChipNow] = React.useState(() => Date.now());
 	React.useEffect(() => {
-		if (!hasPendingEditedChanges) return;
+		if (!hasPendingCardChanges) return;
 		setChangeChipNow(Date.now());
 		const interval = window.setInterval(() => setChangeChipNow(Date.now()), 60_000);
 		return () => window.clearInterval(interval);
-	}, [hasPendingEditedChanges]);
+	}, [hasPendingCardChanges]);
 
 	const changeChipRowsByNoteId = React.useMemo(() => {
-		const rows = new Map<string, { row: NoteChangeChipRow; label: string; overflowLabel: string }>();
-		if (!pendingEditedChanges || pendingEditedChanges.size === 0) return rows;
+		const rows = new Map<string, NoteChangeOverlayDescriptor>();
+		if (!pendingCardChanges || pendingCardChanges.size === 0) return rows;
 
 		const fallbackName = t('note.changedBySomeone') || 'Someone';
+		// Three causes, three sentences. A revocation is not a deletion: the note still exists and
+		// somebody else still has it, which is a different thing to be told.
+		const removedCopy = {
+			deleted: {
+				verb: t('note.removedVerb') || 'deleted this note',
+				short: t('note.removedVerbShort') || 'deleted',
+				fallback: t('note.removedUnattributed') || 'This note was deleted',
+				by: t('note.removedBy') || '{name} deleted this note',
+			},
+			revoked: {
+				verb: t('note.removedRevokedVerb') || 'revoked your access',
+				short: t('note.removedRevokedVerbShort') || 'access revoked',
+				fallback: t('note.removedRevokedUnattributed') || 'Your access was revoked',
+				by: t('note.removedRevokedBy') || '{name} revoked your access',
+			},
+		};
 
-		for (const [noteId, change] of pendingEditedChanges) {
-			if (change.kind !== 'edited') continue;
-			if (change.contributors.length === 0) continue;
+		for (const [noteId, change] of pendingCardChanges) {
+			if (change.kind === 'added') continue;
+			const isRemoved = change.kind === 'removed';
+			// A removal must be drawn even with nobody to credit - unattributed is the normal case
+			// when this tab was disconnected while it happened, and a card that dimmed with no
+			// explanation at all would be worse than leaving it alone.
+			if (change.contributors.length === 0 && !isRemoved) continue;
 			// Prefer the note's OWN collaborator snapshot: it is server-confirmed for this note and
 			// already loaded for every visible shared card, so it is both more accurate and more
 			// likely to be populated than the device-wide identity cache. Fall back to that cache,
@@ -4854,20 +5079,39 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				resolve,
 				now: changeChipNow,
 				fallbackName,
+				// One chip for a removal: the person who removed it. The pending set already
+				// collapses the contributor list for a removal, so this is a belt-and-braces cap
+				// rather than the mechanism - but a stale entry from an older build must not be
+				// able to draw a stack of people next to the word "deleted".
+				maxChips: isRemoved ? 1 : undefined,
 			});
-			if (row.chips.length === 0) continue;
+			if (row.chips.length === 0 && !isRemoved) continue;
 			const names = row.chips.map((chip) => chip.name).join(', ');
-			const overflowLabel = row.overflowCount > 0
+			const overflowLabel = !isRemoved && row.overflowCount > 0
 				? (t('note.changedByOverflow') || '+{count} more').replace('{count}', String(row.overflowCount))
 				: '';
-			const label = [
-				(t('note.changedBy') || 'Changed by {names}').replace('{names}', names),
+			// `trashed` and `deleted` read the same to the person looking at the card - the note is
+			// gone either way, and whether it is recoverable is the owner's business, not a
+			// difference worth two sentences.
+			const copy = change.removalReason === 'revoked' ? removedCopy.revoked : removedCopy.deleted;
+			const label = isRemoved
+				? (names ? copy.by.replace('{name}', names) : copy.fallback)
+				: [
+					(t('note.changedBy') || 'Changed by {names}').replace('{names}', names),
+					overflowLabel,
+				].filter(Boolean).join(', ');
+			rows.set(noteId, {
+				row,
+				label,
 				overflowLabel,
-			].filter(Boolean).join(', ');
-			rows.set(noteId, { row, label, overflowLabel });
+				kind: isRemoved ? 'removed' : 'edited',
+				removedVerb: copy.verb,
+				removedVerbShort: copy.short,
+				removedFallbackLabel: copy.fallback,
+			});
 		}
 		return rows;
-	}, [changeChipNow, collaboratorSummariesByNoteId, pendingEditedChanges, t]);
+	}, [changeChipNow, collaboratorSummariesByNoteId, pendingCardChanges, t]);
 
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
@@ -4989,6 +5233,9 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				changeChipRow={changeChips?.row}
 				changeChipLabel={changeChips?.label}
 				changeChipOverflowLabel={changeChips?.overflowLabel}
+				changeChipKind={changeChips?.kind}
+				changeChipRemovedLabel={changeChips?.removedVerb}
+				changeChipRemovedFallbackLabel={changeChips?.removedFallbackLabel}
 				dropSettling={isDropSettling}
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {

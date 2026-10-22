@@ -76,6 +76,42 @@ type Mark = { name: string; at: number; detail?: string };
 
 const MAX_ROOMS = 5000;
 const MAX_MARKS = 500;
+const MAX_PENDING_TRACE = 200;
+
+/**
+ * Every decision the pending-change system makes, in order.
+ *
+ * It lives in THIS report rather than in `console.log` because that is the difference between one
+ * paste and a hunt through a console on a phone. The questions it has to answer are always the
+ * same: did we see the change at all, were we armed, who did we think did it, and did an entry
+ * survive. Each of those has silently swallowed a change at least once.
+ */
+type PendingTraceEntry = { at: number; kind: string; detail: string };
+const pendingTrace: PendingTraceEntry[] = [];
+
+function formatTraceDetail(detail?: Record<string, unknown>): string {
+	if (!detail) return '';
+	const parts: string[] = [];
+	for (const [key, value] of Object.entries(detail)) {
+		if (value === undefined) continue;
+		const text = Array.isArray(value)
+			? `[${value.map((item) => String(item).slice(0, 8)).join(',')}]`
+			: String(value);
+		parts.push(`${key}=${text}`);
+	}
+	return parts.join(' ');
+}
+
+/**
+ * Record one pending-change decision. Cheap and a no-op unless ?syncDiag=1 is on.
+ *
+ * `kind` is a short stable slug so the log can be grepped; put the varying parts in `detail`.
+ */
+export function recordPendingChangeTrace(kind: string, detail?: Record<string, unknown>): void {
+	if (!SYNC_DIAG_ENABLED) return;
+	if (pendingTrace.length >= MAX_PENDING_TRACE) return;
+	pendingTrace.push({ at: Math.round(now()), kind, detail: formatTraceDetail(detail) });
+}
 const CONCURRENCY_SAMPLE_MS = 250;
 const MAX_CONCURRENCY_SAMPLES = 2400;
 
@@ -493,6 +529,17 @@ export function formatSyncDiagReport(): string {
 	if (marks.length === 0) lines.push('  (none)');
 	for (const mark of [...marks].sort((left, right) => left.at - right.at)) {
 		lines.push(`  ${String(mark.at).padStart(6)}ms  ${mark.name}${mark.detail ? `  ${mark.detail}` : ''}`);
+	}
+	lines.push('');
+
+	lines.push('--- PENDING CHANGES (what the change-chip system decided, in order) ---');
+	if (pendingTrace.length === 0) {
+		lines.push('  (nothing recorded - no change from another person was seen at all)');
+	} else {
+		for (const entry of pendingTrace) {
+			lines.push(`  ${String(entry.at).padStart(6)}ms  ${entry.kind.padEnd(22)}${entry.detail}`);
+		}
+		if (pendingTrace.length >= MAX_PENDING_TRACE) lines.push('  (truncated)');
 	}
 	lines.push('');
 

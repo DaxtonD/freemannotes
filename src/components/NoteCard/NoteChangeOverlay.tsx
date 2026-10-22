@@ -67,35 +67,133 @@ function NoteChangeAvatar(props: { url: string | null; initial: string }): React
  */
 export type NoteChangeOverlayVariant = 'card' | 'row';
 
+/**
+ * `edited` annotates a card that is still a card. `removed` marks one that is a TOMBSTONE: the note
+ * has been trashed, deleted, or shared-access revoked, and this is what is left of it until the
+ * user applies the change.
+ *
+ * The two differ in three ways, each on purpose:
+ *
+ * - **The veil is flat rather than a gradient.** A bottom-to-top fade says "look at the bottom of
+ *   this card"; a removal is about the whole card, so the whole card dims evenly.
+ * - **It does NOT fade out on hover.** The edited treatment gets out of the way so the card's
+ *   action dock is usable - but a removed card has nothing worth acting on, and a treatment that
+ *   disappeared under the pointer would make the card look alive again.
+ * - **It swallows pointer events** instead of passing them through. There is no good answer to
+ *   "what happens when you click a note that is gone": for a deleted one there is nothing to open,
+ *   and for a trashed one you would be taken into something you have not agreed to lose yet.
+ */
+export type NoteChangeOverlayKind = 'edited' | 'removed';
+
+/**
+ * Everything a card or row needs to draw its overlay, built once per changed note in NoteGrid.
+ *
+ * It carries the localised strings rather than letting each render site look them up, because
+ * there are three sites (grid card, list row, strip row) and keeping the lookup in one place is
+ * what stops the row variant growing its own idea of what a missing name means.
+ */
+export type NoteChangeOverlayDescriptor = {
+	row: NoteChangeChipRow;
+	/** For the card's aria-label, which is where a screen reader hears about this. */
+	label: string;
+	overflowLabel: string;
+	kind: NoteChangeOverlayKind;
+	/** "deleted this note" - the card variant, where there is room for a sentence. */
+	removedVerb: string;
+	/** "deleted" - the row variant, which has already given up the name for space. */
+	removedVerbShort: string;
+	removedFallbackLabel: string;
+};
+
 export function NoteChangeOverlay(props: {
 	row: NoteChangeChipRow;
 	/** Already localised and formatted, e.g. "+2 more". */
 	overflowLabel: string;
 	variant?: NoteChangeOverlayVariant;
+	kind?: NoteChangeOverlayKind;
+	/** The verb, already localised: "deleted this note" on a card, "deleted" on a row. */
+	removedLabel?: string;
+	/** Shown when a removal has nobody attributed to it, e.g. "This note was deleted". */
+	removedFallbackLabel?: string;
 }): React.JSX.Element | null {
-	if (props.row.chips.length === 0) return null;
+	const isRemoved = props.kind === 'removed';
+	// A removal with nobody attributed to it still has to be drawn - an unattributed change is the
+	// normal case when the tab was disconnected, and a card that silently dimmed with no
+	// explanation would be worse than no treatment at all.
+	if (props.row.chips.length === 0 && !isRemoved) return null;
 	const isRow = props.variant === 'row';
 	return (
 		<div
-			className={`${styles.overlay}${isRow ? ` ${styles.overlayRow}` : ''}`}
-			data-note-change-overlay="true"
+			className={[
+				styles.overlay,
+				isRow ? styles.overlayRow : '',
+				isRemoved ? styles.overlayRemoved : '',
+			].filter(Boolean).join(' ')}
+			data-note-change-overlay={isRemoved ? 'removed' : 'true'}
 			aria-hidden="true"
 		>
-			<div className={`${styles.scrim}${isRow ? ` ${styles.scrimRow}` : ''}`} />
+			<div
+				className={[
+					styles.scrim,
+					isRow ? styles.scrimRow : '',
+					isRemoved ? styles.scrimRemoved : '',
+				].filter(Boolean).join(' ')}
+			/>
 			<div className={`${styles.chipStack}${isRow ? ` ${styles.chipStackRow}` : ''}`}>
 				{props.row.chips.map((chip) => (
 					<span
 						key={chip.key}
-						className={styles.chip}
+						className={[
+							styles.chip,
+							isRemoved ? styles.chipRemoved : '',
+							// Two-line layout on a card; a row stays on one line and has no name.
+							isRemoved && !isRow ? styles.chipRemovedStacked : '',
+						].filter(Boolean).join(' ')}
 						// The row variant drops the visible name, so the tooltip is the only place
 						// it survives - which makes it load-bearing there rather than a nicety.
-						title={chip.elapsedLabel ? `${chip.name} · ${chip.elapsedLabel}` : chip.name}
+						title={[
+							chip.name,
+							isRemoved ? props.removedLabel : '',
+							chip.elapsedLabel,
+						].filter(Boolean).join(' · ')}
 					>
 						<NoteChangeAvatar url={chip.avatarUrl} initial={chip.initial} />
-						{isRow ? null : <span className={styles.name}>{chip.name}</span>}
-						{chip.elapsedLabel ? <span className={styles.elapsed}>{chip.elapsedLabel}</span> : null}
+						{/* A removal on a CARD goes two-line beside the avatar: name on top, verb
+						    and time underneath.
+
+						    One line did not survive a phone. "Meshuga deleted this note 3m" in a
+						    nowrap chip on a narrow card ellipsised the NAME, so it read
+						    "m, deleted this note" - the one word that had to survive was the one
+						    that got cut. Stacking gives the verb its own line and lets the name
+						    use the chip's full width before it has to truncate at all. */}
+						{isRemoved && !isRow ? (
+							<span className={styles.removedStack}>
+								<span className={styles.name}>{chip.name}</span>
+								<span className={styles.removedLine}>
+									{props.removedLabel ? <span className={styles.removedVerb}>{props.removedLabel}</span> : null}
+									{chip.elapsedLabel ? <span className={styles.elapsed}>{chip.elapsedLabel}</span> : null}
+								</span>
+							</span>
+						) : (
+							<>
+								{isRow ? null : <span className={styles.name}>{chip.name}</span>}
+								{/* The verb is the whole point of a removal chip: an avatar and a
+								    time alone would read as "this person was here", not "this is
+								    gone". On a row it is all there is room for, so the name goes
+								    and the verb stays. */}
+								{isRemoved && props.removedLabel
+									? <span className={styles.removedVerb}>{props.removedLabel}</span>
+									: null}
+								{chip.elapsedLabel ? <span className={styles.elapsed}>{chip.elapsedLabel}</span> : null}
+							</>
+						)}
 					</span>
 				))}
+				{props.row.chips.length === 0 && isRemoved && props.removedFallbackLabel ? (
+					<span className={`${styles.chip} ${styles.chipRemoved}`}>
+						<span className={styles.removedVerb}>{props.removedFallbackLabel}</span>
+					</span>
+				) : null}
 				{props.row.overflowCount > 0 ? (
 					<span className={styles.overflowChip} title={props.overflowLabel || undefined}>
 						{isRow ? `+${props.row.overflowCount}` : props.overflowLabel}

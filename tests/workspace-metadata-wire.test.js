@@ -97,4 +97,44 @@ describe('toClientMetadataPayload — what the browser actually receives', () =>
 		assert.equal(payload.changedUserId, null);
 		assert.deepEqual(payload.changedUserIds, []);
 	});
+
+	// ── The revoke path, which had this exact field missing ────────────────────────────────
+	//
+	// `note-share-revoked` is emitted straight from noteShareRouter rather than through the
+	// 10s note-change debounce, which makes it the ONE removal signal that arrives with its
+	// actor already known. The emit was not sending `changedUserId`, so a recipient's card
+	// could only say "Your access was revoked" - no avatar, no name, nothing to show who did
+	// it, and no later event to fill it in.
+	describe('a revocation carries who did it', () => {
+		const revoked = (overrides = {}) => toClientMetadataPayload(normalizeWorkspaceMetadataEvent({
+			reason: 'note-share-revoked',
+			workspaceId: 'ws-owner',
+			docId: 'ws-owner:note-7',
+			changedUserId: 'user-meshuga',
+			userIds: ['user-daxton', 'user-meshuga'],
+			...overrides,
+		}));
+
+		it('keeps the actor all the way to the wire', () => {
+			assert.equal(revoked().changedUserId, 'user-meshuga');
+		});
+
+		it('keeps the owner docId, which is what the recipient translates to its alias', () => {
+			assert.equal(revoked().docId, 'ws-owner:note-7');
+		});
+
+		it('still hides the recipient filter', () => {
+			assert.equal('userIds' in revoked(), false);
+		});
+
+		it('survives JSON, where an undefined actor would vanish silently', () => {
+			const round = JSON.parse(JSON.stringify(revoked()));
+			assert.equal(round.changedUserId, 'user-meshuga');
+		});
+
+		it('reports null rather than undefined when the actor is genuinely absent', () => {
+			// The client distinguishes "nobody named" from "field missing"; both must read null.
+			assert.equal(revoked({ changedUserId: undefined }).changedUserId, null);
+		});
+	});
 });

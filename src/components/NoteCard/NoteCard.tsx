@@ -51,7 +51,7 @@ import {
 } from '../../core/noteMediaStore';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import type { NoteChangeChipRow } from '../../core/noteChangeChips';
-import { NoteChangeOverlay } from './NoteChangeOverlay';
+import { NoteChangeOverlay, type NoteChangeOverlayKind } from './NoteChangeOverlay';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
@@ -146,6 +146,10 @@ export type NoteCardProps = {
 	 * that for every card in the grid.
 	 */
 	changeChipRow?: NoteChangeChipRow | null;
+	/** 'removed' turns the annotation into a tombstone - see NoteChangeOverlay. */
+	changeChipKind?: NoteChangeOverlayKind;
+	changeChipRemovedLabel?: string;
+	changeChipRemovedFallbackLabel?: string;
 	/** Reads "Changed by Alice, Bob" - appended to the card's aria-label. */
 	changeChipLabel?: string;
 	/** Title text for the "+2" chip, e.g. "2 more people". */
@@ -2276,6 +2280,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 	const tryOpen = React.useCallback((): void => {
 		if (!props.onOpen) return;
+		/**
+		 * A tombstone does not open. For a permanently deleted note there is nothing behind the
+		 * card at all; for a trashed one, opening would walk the user into a loss they have not
+		 * agreed to yet.
+		 *
+		 * The guard belongs HERE rather than in CSS. The overlay swallows pointer events, which
+		 * covers the mouse and the finger and nothing else - Enter and Space arrive through
+		 * onKeyDown, and both paths funnel through this one callback.
+		 */
+		if (props.changeChipKind === 'removed' && !props.isTrashView) return;
 		if (props.shouldSuppressOpen?.()) return;
 		props.onOpen();
 	}, [props]);
@@ -2397,7 +2411,15 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 	// One source of truth for "does this card wear the treatment", so the border signal, the
 	// overlay and the aria-label can never disagree about it.
-	const hasChangeTreatment = Boolean(props.changeChipRow && props.changeChipRow.chips.length > 0);
+	// A removal earns the treatment even with no chips in it: an unattributed deletion still has
+	// to explain itself, and "this note was deleted" is the message either way.
+	const hasChangeTreatment = Boolean(
+		props.changeChipRow
+		&& (props.changeChipRow.chips.length > 0 || props.changeChipKind === 'removed')
+	);
+	// Held on the grid, but the note behind it is gone. It is not a control, so it does not claim
+	// to be one: no button role, nothing to tab to. The aria-label still carries what happened.
+	const isRemovedTombstone = props.changeChipKind === 'removed' && !props.isTrashView;
 
 	return (
 		<article
@@ -2407,8 +2429,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			data-note-card="true"
 			data-drag-handle={props.useWholeCardDragHandle ? 'true' : undefined}
 			aria-label={hasChangeTreatment && props.changeChipLabel ? `Note ${props.noteId}. ${props.changeChipLabel}` : `Note ${props.noteId}`}
-			role={props.onOpen ? 'button' : undefined}
-			tabIndex={props.onOpen ? 0 : undefined}
+			role={props.onOpen && !isRemovedTombstone ? 'button' : undefined}
+			tabIndex={props.onOpen && !isRemovedTombstone ? 0 : undefined}
 			onPointerDown={(e) => {
 				// Track initial point; open action is decided on pointer up if movement stayed small.
 				if (!props.onOpen && !props.onMoreMenu) return;
@@ -2904,6 +2926,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				<NoteChangeOverlay
 					row={props.changeChipRow}
 					overflowLabel={props.changeChipOverflowLabel ?? ''}
+					kind={props.changeChipKind}
+					removedLabel={props.changeChipRemovedLabel}
+					removedFallbackLabel={props.changeChipRemovedFallbackLabel}
 				/>
 			) : null}
 		</article>

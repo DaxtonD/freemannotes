@@ -243,7 +243,12 @@ export function CrossWorkspaceNoteModal({
 			onDelete={async (_deletedNoteId) => {
 				// Soft-delete via the Y.Doc so the WS provider syncs the trashed
 				// flag to the server. The note will appear in that workspace's trash.
-				setNoteTrashed(doc, true);
+				//
+				// Not via manager.trashNote, which is scoped to the ACTIVE workspace - this note
+				// belongs to another one and its doc is already in hand. So the actor is passed
+				// explicitly here; without it a collaborator's card could only say "This note was
+				// deleted" with nobody named on it.
+				setNoteTrashed(doc, true, undefined, authUserId ?? null);
 				onClose();
 			}}
 			onTogglePin={readOnly ? undefined : () => {

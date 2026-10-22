@@ -16,6 +16,7 @@
  */
 
 import * as Y from 'yjs';
+import { writeNoteTrashedBy } from './noteAuthorFields';
 import type { JSONContent } from '@tiptap/core';
 import { NOTE_BANNER_METADATA_FIELD, hasSharedNoteBannerPreference, normalizeNoteBannerFile, readSharedNoteBannerFile } from './noteBanners';
 import type { NoteColorToken } from './noteColors';
@@ -175,6 +176,26 @@ function normalizeDrawingIds(value: unknown): string[] {
  * @param prefix - Human-readable prefix baked into the fallback ID for
  *                 debuggability. Ignored when randomUUID is available.
  */
+/**
+ * Who created a note and who trashed it.
+ *
+ * The implementation lives in `noteAuthorFields.ts`, which imports nothing but Yjs so the rules can
+ * be tested in plain Node - this file's import chain reaches React components and CSS modules and
+ * cannot be loaded in a test at all. Re-exported here so callers have one place to import note
+ * metadata helpers from.
+ *
+ * Read that module for WHY the actor belongs on the note instead of on a separate event. Short
+ * version: the event is debounced and carries no note ids, so matching the two up needed a time
+ * window, and the window was wrong on every connection it had not been tuned for.
+ */
+export {
+	NOTE_CREATED_BY_FIELD,
+	NOTE_TRASHED_BY_FIELD,
+	readNoteCreatedBy,
+	readNoteTrashedBy,
+	setNoteCreatedBy,
+} from './noteAuthorFields';
+
 export function makeNoteId(prefix: string): string {
 	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
 		return crypto.randomUUID();
@@ -570,7 +591,20 @@ export function touchUpdatedAt(doc: Y.Doc, origin?: symbol): void {
  * @param trashed - Whether the note should be trashed (default: true).
  * @param origin  - Optional transaction origin for observer filtering.
  */
-export function setNoteTrashed(doc: Y.Doc, trashed = true, origin?: symbol): void {
+export function setNoteTrashed(
+	doc: Y.Doc,
+	trashed = true,
+	origin?: symbol,
+	/**
+	 * Who did it. Written in the SAME transaction as the flag, which is the whole point: another
+	 * device reading `trashed = true` can read who caused it from the same update, instead of
+	 * waiting ~10s for a separate event and guessing whether it referred to this note.
+	 *
+	 * Optional so existing callers keep working; they simply record nothing, which reads back as
+	 * "unknown" and falls through to the old attribution path.
+	 */
+	actorUserId?: string | null
+): void {
 	const metadata = doc.getMap<any>('metadata');
 	const run = (): void => {
 		metadata.set('trashed', trashed);
@@ -579,6 +613,9 @@ export function setNoteTrashed(doc: Y.Doc, trashed = true, origin?: symbol): voi
 			metadata.set('archived', false);
 			metadata.set('archivedAt', null);
 		}
+		// Inside this transaction on purpose: a receiving client must never see `trashed` flip in
+		// one update and learn who did it in another, or it is back to guessing in between.
+		writeNoteTrashedBy(metadata, trashed, actorUserId);
 		/* Also bump updatedAt so the change is visible in timestamps. */
 		metadata.set('updatedAt', Date.now());
 	};

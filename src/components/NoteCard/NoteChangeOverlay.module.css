@@ -95,6 +95,77 @@
 	);
 }
 
+/* ── Removed: a tombstone, not an annotation ───────────────────────────────────────────────────
+   See NoteChangeOverlay.tsx for the three deliberate differences. This is the one that needs
+   stating in CSS: the overlay takes pointer events here, where the edited variant passes them
+   through. A removed card has nothing worth clicking - for a deleted note there is nothing behind
+   it at all - so swallowing the click is the honest behaviour, and it is also what stops the
+   dimmed card reading as merely "greyed out but still usable". */
+.overlayRemoved {
+	pointer-events: auto;
+	cursor: default;
+}
+
+/* Flat, not a gradient. A bottom-to-top fade directs the eye to the bottom edge, which is right
+   for "somebody edited this" and wrong for "this is gone" - a removal is a statement about the
+   whole card. Heavier than the edited veil at its strongest, too: the card underneath is no longer
+   information the user can act on, it is a record of what used to be there. */
+.scrimRemoved {
+	background: color-mix(in srgb, var(--note-change-veil) 58%, transparent);
+}
+
+/* The verb carries the meaning, so it must not be the thing that ellipsises away - the name is
+   already allowed to. */
+.removedVerb {
+	flex: 0 0 auto;
+	font-weight: 600;
+	opacity: 0.9;
+}
+
+/* Two lines beside a vertically centred avatar: name on top, verb + time underneath.
+
+   One line lost the argument on a phone. In a nowrap chip on a narrow card,
+   "Meshuga deleted this note 3m" ellipsised the NAME - so it rendered as "m, deleted this note",
+   cutting the only word that identifies anybody. Two lines give the verb its own row and let the
+   name have the chip's full width before it has to truncate. */
+.removedStack {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	min-width: 0;
+	line-height: 1.35;
+}
+
+.removedLine {
+	display: flex;
+	align-items: baseline;
+	gap: 5px;
+	min-width: 0;
+}
+
+/* Taller than a one-line chip, so the avatar grows with it instead of looking stranded against
+   two lines of text. */
+.chipRemovedStacked {
+	padding: 4px 11px 4px 4px;
+	align-items: center;
+}
+
+.chipRemovedStacked .avatar,
+.chipRemovedStacked .avatarFallback {
+	width: 26px;
+	height: 26px;
+}
+
+.chipRemovedStacked .avatarFallback {
+	font-size: 11px;
+}
+
+/* Accent border rather than the plain hairline: the edited chip sits on a card that is still live,
+   whereas this one is the only live thing left on it. */
+.chipRemoved {
+	border-color: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 48%, transparent);
+}
+
 /* Gentle, not a fly-in. The user was explicit about this: a card quietly acquiring a treatment
    reads as information, a card snapping into one reads as a glitch. */
 .scrim,

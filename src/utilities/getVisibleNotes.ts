@@ -29,6 +29,15 @@ export type VisibleNoteFilters = {
 	sortMode?: NoteSortMode;
 	sortDirection?: SortDirection;
 	prioritizePinned?: boolean;
+	/**
+	 * Notes that must survive the trash/archive gate however they are flagged.
+	 *
+	 * This is how a card somebody else trashed is held on the grid as a dimmed tombstone until the
+	 * user applies the change. Exempting it HERE rather than re-inserting it afterwards is what
+	 * keeps its position: it sorts into exactly the place it already occupied, under whatever sort
+	 * is in effect, instead of being spliced back in at a guessed index.
+	 */
+	keepNoteIds?: ReadonlySet<string>;
 };
 
 function normalizeId(value: unknown): string {
@@ -117,6 +126,7 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		sortMode = 'manual',
 		sortDirection,
 		prioritizePinned = true,
+		keepNoteIds = null,
 	} = filters;
 	const activeCollectionId = normalizeId(selectedCollectionId) || null;
 	const activeLabelIds = Array.from(new Set(selectedLabelIds.map((value) => normalizeId(value)).filter(Boolean)));
@@ -125,11 +135,16 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 	// Apply view filters before sort/group logic so every consumer sees the same
 	// workspace/archive/trash semantics from one shared source of truth.
 	const filtered = notes.filter((note) => {
+		// A held card is exempt from the trash/archive gate only. It is deliberately NOT exempt
+		// from the collection, label and reminder filters below: those are the user's own scoping,
+		// and a card from a collection they are not currently looking at has no position here to
+		// hold on to in the first place.
+		const held = keepNoteIds ? keepNoteIds.has(note.id) : false;
 		if (showTrashed) {
 			if (!note.trashed) return false;
 		} else if (showArchived) {
-			if (note.trashed || !note.archived) return false;
-		} else if (note.trashed || note.archived) {
+			if (!held && (note.trashed || !note.archived)) return false;
+		} else if (!held && (note.trashed || note.archived)) {
 			return false;
 		}
 		if (activeCollectionId && note.collectionId !== activeCollectionId) return false;

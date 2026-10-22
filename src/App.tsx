@@ -118,7 +118,7 @@ import {
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { fetchWithTimeout } from './core/network';
 import { type LocaleCode, useI18n } from './core/i18n';
-import { addNoteDrawingId, clearNoteDocPendingNew, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readDrawingLinkState, readNoteFromDoc, removeNoteDrawingId, setNoteDocPendingNew, setNoteReminder } from './core/noteModel';
+import { addNoteDrawingId, clearNoteDocPendingNew, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readDrawingLinkState, readNoteFromDoc, removeNoteDrawingId, setNoteCreatedBy, setNoteDocPendingNew, setNoteReminder } from './core/noteModel';
 import { getNotePinPrefsSnapshot, moveUserNotePinPreference, replaceUserNotePinPrefs, resolveUserNotePinned, setUserNotePinnedOnDoc, setUserNotePinPreferenceScope } from './core/notePinPreferences';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
@@ -175,16 +175,23 @@ import {
 	flushPendingNoteDocumentDeletes,
 } from './core/noteDocumentDeleteQueue';
 import { clearNoteDigestCursors, seedWorkspaceDigest } from './core/noteDigestSeed';
+import { recordPendingChangeTrace } from './core/syncTimingDiagnostics';
 import {
 	applyNoteEdited,
 	applyNoteListDiff,
+	applyNoteRemoved,
+	attributeNoteRemoval,
 	clearPendingNoteChanges,
 	createEmptyPendingNoteChanges,
 	diffNoteIds,
 	pendingAddedNoteIds,
-	pendingEditedNoteChanges,
+	pendingCardNoteChanges,
+	pendingRemovedNoteIds,
 	resolveNoteChange,
 	resolveNoteListChangeAuthor,
+	resolveOwnPendingAdd,
+	retractOwnNoteListChanges,
+	NOTE_ORDER_INITIAL_RECONCILE_ORIGIN,
 	NOTE_ORDER_RECONCILE_ORIGIN,
 	summarisePendingNoteChanges,
 	type PendingNoteChangeState,
@@ -6358,6 +6365,16 @@ export function App(): React.JSX.Element {
 	// checks it still matches before writing, discarding results from any call
 	// that's since been superseded by a newer one.
 	const refreshNoteShareStateCallIdRef = React.useRef(0);
+	/**
+	 * Workspaces whose placement reconciliation has run to completion at least once this session,
+	 * INCLUDING the pruning half. Until then its writes are cleanup and must announce nothing -
+	 * see NOTE_ORDER_INITIAL_RECONCILE_ORIGIN.
+	 *
+	 * Only recorded when pruning actually happened: a cycle skipped because the device was offline
+	 * or the fetch failed has not reconciled anything, and treating it as done would let the real
+	 * first prune arrive later looking like news.
+	 */
+	const placementReconciledWorkspacesRef = React.useRef<Set<string>>(new Set());
 
 	// Same supersession pattern as refreshNoteShareStateCallIdRef, for InboxView's
 	// onOpenNote handler below. A rapid second inbox-card click (a different card,
@@ -7172,6 +7189,26 @@ export function App(): React.JSX.Element {
 			lastSeenNoteIdsRef.current = readIds();
 			const onChange = (event: Y.YArrayEvent<string>): void => {
 				const next = readIds();
+				/**
+				 * The initial reconciliation is NO LONGER suppressed here, and that reversal is
+				 * deliberate.
+				 *
+				 * It was suppressed to stop cold-start catch-up being announced as news - but that
+				 * mechanism was inferred from reading the code, never observed, and suppressing it
+				 * broke something real: the flag that says "this workspace has reconciled" is only
+				 * set when a pass completes, and on a slow link (measured: socket handshake p50
+				 * 15s, last room synced at 37s) a placement fetch can fail, leave the flag unset,
+				 * and send the NEXT pass - carrying a genuine trashing - down the suppressed path.
+				 * The note vanished with no chip at all.
+				 *
+				 * It also had the failure direction backwards. This whole feature treats an
+				 * unattributed change as somebody else's precisely because deferring is the less
+				 * intrusive mistake; silence is the intrusive one.
+				 *
+				 * The origin is still tagged, and the trace below reports it. If cold-start
+				 * tombstones reappear, the trace will name the initial reconcile as their source
+				 * and the mechanism will be confirmed instead of assumed.
+				 */
 				// Until the first paint is done, follow the list without judging it.
 				if (!pendingChangesArmedRef.current) {
 					lastSeenNoteIdsRef.current = next;
@@ -7182,6 +7219,17 @@ export function App(): React.JSX.Element {
 					lastSeenNoteIdsRef.current = next;
 					return;
 				}
+				recordPendingChangeTrace('list-diff', {
+					added: added.length,
+					removed: removed.length,
+					ids: [...added, ...removed].slice(0, 4),
+					local: event.transaction.local,
+					origin: event.transaction.origin === NOTE_ORDER_INITIAL_RECONCILE_ORIGIN
+						? 'initial-reconcile'
+						: event.transaction.origin === NOTE_ORDER_RECONCILE_ORIGIN
+							? 'reconcile'
+							: 'other',
+				});
 				// `transaction.local` is what makes creating a note instant. A local write fires
 				// this observer immediately, while its attribution event is 10s behind it, so
 				// waiting for the server to say "that was you" withheld every note the user made
@@ -7197,12 +7245,19 @@ export function App(): React.JSX.Element {
 					now,
 					windowMs: NOTE_CHANGE_ATTRIBUTION_WINDOW_MS,
 				});
+				recordPendingChangeTrace('list-diff-author', { resolved: byUserId ?? 'UNKNOWN', me: authUserId ?? '-' });
 				setPendingNoteChanges((state) => applyNoteListDiff(state, {
 					added,
 					removed,
 					byUserId,
 					at: now,
 					authUserId: authUserId ?? null,
+					// Mirroring server state rather than carrying out something done here. The
+					// server still sees THIS user writing the registry and will name them as the
+					// actor, so the entry has to be marked or retractOwnNoteListChanges will throw
+					// it away ten seconds later - which is exactly what happened to the tombstone
+					// for a revoked share.
+					viaReconcile: event.transaction.origin === NOTE_ORDER_RECONCILE_ORIGIN,
 				}));
 				// Accounted for, so the next diff measures from here.
 				lastSeenNoteIdsRef.current = next;
@@ -7239,10 +7294,16 @@ export function App(): React.JSX.Element {
 		// Disarm first, unconditionally. A workspace switch re-runs this, and until the new
 		// workspace has settled its fill-in must not be mistaken for other people's work.
 		pendingChangesArmedRef.current = false;
+		recordPendingChangeTrace('disarm', {
+			gridReady,
+			registrySynced: startupSyncStatus.registrySynced,
+			totalOrdered: startupSyncStatus.totalOrdered,
+		});
 		if (typeof window === 'undefined') return;
 		if (!gridReady || !startupSyncStatus.registrySynced) return;
 		const timer = window.setTimeout(() => {
 			pendingChangesArmedRef.current = true;
+			recordPendingChangeTrace('ARMED');
 		}, PENDING_CHANGES_ARM_SETTLE_MS);
 		return () => window.clearTimeout(timer);
 	}, [gridReady, authWorkspaceId, startupSyncStatus.registrySynced, startupSyncStatus.totalOrdered]);
@@ -7404,13 +7465,160 @@ export function App(): React.JSX.Element {
 		() => pendingAddedNoteIds(pendingNoteChanges),
 		[pendingNoteChanges]
 	);
-	// Edited notes are the opposite case to withheld ones: the change is already applied and the
-	// card stays live. All the grid needs is who did it, so it can explain a card that grew or
-	// shrank on its own instead of leaving it mysterious.
-	const pendingEditedChanges = React.useMemo(
-		() => pendingEditedNoteChanges(pendingNoteChanges),
+	// Edited and removed notes are the opposite case to withheld ones: both are ON the grid and
+	// marked, rather than being kept off it. All the grid needs is what happened and who did it, so
+	// it can explain a card that grew or shrank on its own, or one that is no longer there.
+	const pendingCardChanges = React.useMemo(
+		() => pendingCardNoteChanges(pendingNoteChanges),
 		[pendingNoteChanges]
 	);
+	/**
+	 * Notes that have LEFT - trashed by somebody else, permanently deleted, or shared access
+	 * revoked - and are being held on the grid as dimmed tombstones until the user applies it.
+	 *
+	 * Letting them simply vanish is what closes the gap up and slides everything below them, which
+	 * is the same complaint as a note appearing unannounced, just in the other direction.
+	 */
+	const heldRemovedNoteIds = React.useMemo(
+		() => pendingRemovedNoteIds(pendingNoteChanges),
+		[pendingNoteChanges]
+	);
+
+	/**
+	 * Somebody else trashed a note that is on the grid.
+	 *
+	 * Reported by NoteGrid's metadata observer rather than derived from the note list, because
+	 * `trashNote` writes `metadata.trashed` and never touches `noteOrder` - so a trashing is
+	 * invisible to the note-list diff. It cannot wait for the server's announcement either: that is
+	 * debounced 10s, by which time the card has already gone, and holding it afterwards would bring
+	 * it back from the dead. See the observer for the full reasoning.
+	 *
+	 * Attribution is resolved the same way a note-list change is, which means it is almost always
+	 * null at this point - the name arrives later via `attributeNoteRemoval`.
+	 */
+	const handleNoteTrashedRemotely = React.useCallback((
+		noteId: string,
+		context: { isLocalTransaction: boolean; origin: unknown; actorUserId: string | null }
+	) => {
+		if (!pendingChangesArmedRef.current) {
+			// The single most useful line in the trace: a real change arrived and was dropped
+			// because a 1.2s settle timer had re-opened. See PENDING_CHANGES_ARM_SETTLE_MS.
+			recordPendingChangeTrace('trash-DROPPED-not-armed', { note: noteId.slice(0, 8) });
+			return;
+		}
+		const now = Date.now();
+		/**
+		 * If the note says who trashed it, that settles it - no window, no correlation.
+		 *
+		 * Two things fall out of trusting it. The tombstone can name somebody immediately instead
+		 * of waiting ~10s for `attributeNoteRemoval` to fill it in; and when the actor turns out to
+		 * be the signed-in user, `applyNoteRemoved` discards the entry outright, so trashing a note
+		 * on one device no longer leaves a tombstone on your other one.
+		 *
+		 * Notes trashed before the field existed read null and fall through to the old path.
+		 */
+		const byUserId = context.actorUserId ?? resolveNoteListChangeAuthor({
+			isLocalTransaction: context.isLocalTransaction,
+			isServerReconcile: context.origin === NOTE_ORDER_RECONCILE_ORIGIN,
+			userInitiatedAt: userInitiatedPlacementChangeAtRef.current,
+			userActionWindowMs: USER_INITIATED_PLACEMENT_WINDOW_MS,
+			authUserId: authUserId ?? null,
+			attribution: noteOrderAttributionRef.current,
+			now,
+			windowMs: NOTE_CHANGE_ATTRIBUTION_WINDOW_MS,
+		});
+		recordPendingChangeTrace('trash-handled', {
+			note: noteId.slice(0, 8),
+			resolved: byUserId ?? 'UNKNOWN',
+			// 'note' means the actor came off the note itself; 'inferred' means we fell back to
+			// matching a debounced event by time, which is the old behaviour.
+			source: context.actorUserId ? 'note' : 'inferred',
+			own: byUserId != null && byUserId === authUserId,
+		});
+		setPendingNoteChanges((state) => applyNoteRemoved(state, {
+			noteId,
+			byUserId,
+			at: now,
+			authUserId: authUserId ?? null,
+			reason: 'trashed',
+			// This device saw the key flip on a remote update; it did not write it as a reconcile.
+			viaReconcile: context.origin === NOTE_ORDER_RECONCILE_ORIGIN,
+		}));
+	}, [authUserId]);
+
+	/**
+	 * A held note turned out to be one the signed-in user made, according to the note itself.
+	 *
+	 * This is the replacement for the 15s retraction window on the path that actually matters. The
+	 * retraction had to guess which held entries a debounced, id-less event explained; this names
+	 * one specific note and fires when its data arrives, so it works the same on any connection.
+	 */
+	const handleWithheldNoteAuthorKnown = React.useCallback((noteId: string, authorUserId: string) => {
+		setPendingNoteChanges((state) => {
+			const next = resolveOwnPendingAdd(state, {
+				noteId,
+				authorUserId,
+				authUserId: authUserId ?? null,
+			});
+			if (next !== state) {
+				recordPendingChangeTrace('released-by-author', { note: noteId.slice(0, 8) });
+			}
+			return next;
+		});
+	}, [authUserId]);
+
+	/**
+	 * Somebody revoked this user's access to a shared note.
+	 *
+	 * Handled from the event rather than from the alias prune that follows it, for one reason worth
+	 * stating: `note-share-revoked` is published directly by `noteShareRouter` and is NOT put
+	 * through the 10s note-change notifier, so it carries the actor's id and arrives at once. That
+	 * makes revocation the only one of the three removal causes that can name somebody immediately.
+	 *
+	 * The event names the OWNER's room, so it has to be translated into this user's alias. It still
+	 * resolves here because this handler is upstream of `refreshNoteShareState` - the placement has
+	 * not been pruned yet when we look.
+	 */
+	const handleNoteShareRevokedRef = React.useRef<(docId: string, byUserId: string | null) => void>(() => {});
+	const handleNoteShareRevoked = React.useCallback((docId: string, byUserId: string | null) => {
+		if (!pendingChangesArmedRef.current) {
+			recordPendingChangeTrace('revoke-DROPPED-not-armed', { doc: docId.slice(-8) });
+			return;
+		}
+		const aliasForRoom = sharedPlacementsRef.current.find(
+			(placement) => String(placement.roomId || '') === docId
+		);
+		if (!aliasForRoom) {
+			// The event names the OWNER's room; without a placement there is nothing to translate
+			// it to. If this shows up, the placement was pruned before the event was handled.
+			recordPendingChangeTrace('revoke-NO-PLACEMENT', { doc: docId.slice(-8) });
+			return;
+		}
+		recordPendingChangeTrace('revoke-handled', {
+			note: aliasForRoom.aliasId.slice(-8),
+			by: byUserId ?? 'UNKNOWN',
+		});
+		setPendingNoteChanges((state) => applyNoteRemoved(state, {
+			noteId: aliasForRoom.aliasId,
+			byUserId,
+			at: Date.now(),
+			authUserId: authUserId ?? null,
+			reason: 'revoked',
+			// The prune that follows is this device's own reconcile write, and the server will
+			// report THIS USER as the actor for it. Marking the entry keeps
+			// retractOwnNoteListChanges from throwing the tombstone away ten seconds later.
+			viaReconcile: true,
+		}));
+	}, [authUserId]);
+	handleNoteShareRevokedRef.current = handleNoteShareRevoked;
+
+	/**
+	 * Keep DocumentManager's acting user in step with auth, so anything it writes on the user's
+	 * behalf can record who did it. See setActingUserId.
+	 */
+	React.useEffect(() => {
+		manager.setActingUserId(authStatus === 'authed' ? (authUserId ?? null) : null);
+	}, [manager, authStatus, authUserId]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -7824,6 +8032,12 @@ export function App(): React.JSX.Element {
 						// await gives a newer call for this same workspace time to finish
 						// and commit its own (possibly better) result first.
 						if (superseded() || authWorkspaceIdRef.current !== requestedWorkspaceId) return;
+						// First pass for this workspace? Then everything below is catch-up, and the
+						// origin says so. Read BEFORE any write, because the observer that cares
+						// about it fires inside those writes.
+						const reconcileOrigin = placementReconciledWorkspacesRef.current.has(requestedWorkspaceId)
+							? NOTE_ORDER_RECONCILE_ORIGIN
+							: NOTE_ORDER_INITIAL_RECONCILE_ORIGIN;
 						const currentRefs = noteOrder.toArray().filter((id) => id.startsWith('shared-placement:'));
 						const currentRefSet = new Set(currentRefs);
 						const expected = [...resolvedActiveWorkspacePlacements].sort(
@@ -7835,7 +8049,7 @@ export function App(): React.JSX.Element {
 						// it here does not mean the user accepted the share here. See
 						// NOTE_ORDER_RECONCILE_ORIGIN - without this, a note accepted on one device
 						// appeared instantly on all of them instead of being announced on the others.
-						if (missing.length > 0) await manager.addNoteReferences(missing, { origin: NOTE_ORDER_RECONCILE_ORIGIN });
+						if (missing.length > 0) await manager.addNoteReferences(missing, { origin: reconcileOrigin });
 						// Never prune refs on a cycle where the placements fetch was
 						// unreliable (offline, or the request itself failed/timed out —
 						// see anyPlacementFetchFailed above). A prior version trusted an
@@ -7849,13 +8063,17 @@ export function App(): React.JSX.Element {
 						if (!offline && !activePlacementFetchFailed) {
 							const stale = currentRefs.filter((id) => !expectedIdSet.has(id));
 							if (stale.length > 0) {
-								await manager.removeNoteReferences(stale, { origin: NOTE_ORDER_RECONCILE_ORIGIN });
+								await manager.removeNoteReferences(stale, { origin: reconcileOrigin });
 								// Color preferences are keyed by alias id, not the stable
 								// underlying docId (unlike pins, which key off docId and are
 								// safe to leave orphaned) — a re-share always mints a new
 								// alias id, so a color set here can never be reclaimed later.
 								for (const id of stale) setUserNoteColorToken(id, null);
 							}
+							// Pruning ran, so this workspace is reconciled: from here on a prune is
+							// a real removal the user should hear about. Marked AFTER the writes,
+							// since the observer reads the origin they carried.
+							placementReconciledWorkspacesRef.current.add(requestedWorkspaceId);
 						}
 					} catch {
 						// Best-effort — the next reconciliation trigger retries.
@@ -8300,11 +8518,75 @@ export function App(): React.JSX.Element {
 					// Who changed what. A note-level event marks that note as edited; a registry
 					// event only supplies attribution, because the diff above is what decides
 					// whether anything was actually added or removed.
+					if (
+						payload.type === 'workspace-metadata-changed'
+						&& payload.reason === 'note-share-revoked'
+						&& typeof payload.docId === 'string'
+						&& payload.docId
+					) {
+						handleNoteShareRevokedRef.current(
+							payload.docId,
+							typeof payload.changedUserId === 'string' && payload.changedUserId
+								? payload.changedUserId
+								: null
+						);
+					}
 					if (payload.type === 'workspace-metadata-changed' && payload.reason === 'note-order-changed') {
+						const attributedAt = Date.now();
 						noteOrderAttributionRef.current = {
 							byUserId: typeof payload.changedUserId === 'string' ? payload.changedUserId : null,
-							at: Date.now(),
+							at: attributedAt,
 						};
+						// This event is also the ONLY chance to put your own cross-device change
+						// back where it belongs - on the grid.
+						//
+						// A note created on another device reaches this tab as a remote Yjs update
+						// with no attribution, and an unattributed change is deliberately held (see
+						// resolveNoteListChangeAuthor for why guessing is worse). The attribution
+						// turns up here about ten seconds later, by which point the entry already
+						// exists, so the only remaining move is to retract it.
+						//
+						// The window is NOTE_CHANGE_ATTRIBUTION_WINDOW_MS rather than a number of
+						// its own, because it is the same correlation question asked backwards and
+						// rests on the same arithmetic: the server debounces a registry
+						// announcement by NOTE_CHANGE_DEBOUNCE_MS (10s), so anything shorter than
+						// that can never fire at all, and the remainder covers Yjs propagation and
+						// fan-out. It is deliberately NOT widened to NOTE_CHANGE_MAX_WAIT_MS (60s,
+						// when continuous churn announces regardless) - the earliest entries of
+						// such a burst simply stay held, which is just today's behaviour, whereas
+						// four times the window is four times the exposure to the one case
+						// retractOwnNoteListChanges cannot detect.
+						const registryActors: string[] = Array.isArray(payload.changedUserIds)
+							? payload.changedUserIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
+							: [];
+						// Fallback for a server old enough to send only the singular field.
+						if (registryActors.length === 0 && typeof payload.changedUserId === 'string' && payload.changedUserId) {
+							registryActors.push(payload.changedUserId);
+						}
+						const retractingForUserId = authUserId ?? null;
+						if (registryActors.length > 0 && retractingForUserId) {
+							setPendingNoteChanges((state) => {
+								const next = retractOwnNoteListChanges(state, {
+									changedUserIds: registryActors,
+									authUserId: retractingForUserId,
+									now: attributedAt,
+									windowMs: NOTE_CHANGE_ATTRIBUTION_WINDOW_MS,
+								});
+								// Log the OUTCOME, not just the attempt. The previous version
+								// recorded that a retraction was tried and said nothing about what
+								// it did, which left exactly one question unanswerable from the
+								// trace: did this quietly delete the tombstone the user was looking
+								// at? Report what actually went.
+								recordPendingChangeTrace('retract', {
+									actors: registryActors.map((id) => id.slice(0, 8)),
+									onlyMe: registryActors.every((id) => id === retractingForUserId),
+									before: state.size,
+									after: next.size,
+									dropped: state.size - next.size,
+								});
+								return next;
+							});
+						}
 					}
 					if (payload.type === 'workspace-metadata-changed' && payload.reason === 'note-changed') {
 						const changedDocId = typeof payload.docId === 'string' ? payload.docId : '';
@@ -8336,6 +8618,22 @@ export function App(): React.JSX.Element {
 									// order the server sent, which is the order chips are drawn.
 									let next = state;
 									for (const byUserId of changedByList) {
+										// A card already being held as REMOVED is a tombstone
+										// waiting for a name, not a note that got edited. The
+										// announcement that follows a trashing IS the trashing -
+										// the metadata observer saw the key flip ten seconds
+										// earlier but had nobody to credit it to - so this fills
+										// that in rather than re-stamping the card as edited.
+										const existing = next.get(gridNoteId);
+										if (existing && existing.kind === 'removed') {
+											next = attributeNoteRemoval(next, {
+												noteId: gridNoteId,
+												byUserId,
+												at,
+												authUserId: authUserId ?? null,
+											});
+											continue;
+										}
 										next = applyNoteEdited(next, {
 											noteId: gridNoteId,
 											byUserId,
@@ -8785,6 +9083,10 @@ export function App(): React.JSX.Element {
 			} else {
 				initTextNoteDoc(doc, '', '', undefined, []);
 			}
+			// Stamp the author before the note can reach the registry. Your other devices read this
+			// off the note itself and show it straight away, instead of holding it behind the
+			// changes chip until a debounced event confirms it was you.
+			setNoteCreatedBy(doc, authUserId);
 			setNoteDocPendingNew(doc);
 			if (sidebarView === 'notes' && activeCollectionId && activeCollection) {
 				// Seed the active collection so quick-create from a filtered collection keeps
@@ -10762,6 +11064,7 @@ export function App(): React.JSX.Element {
 			const id = makeNoteId('text-note');
 			const doc = await manager.getDocWithSync(id);
 			initTextNoteDoc(doc, args.title, args.body, args.richContent, args.previewLinks);
+			setNoteCreatedBy(doc, authUserId);
 			await manager.createNote(id, args.title);
 			// Branch: after create/save, close the new-note editor and return to grid.
 			// We intentionally do NOT auto-open the saved note editor here.
@@ -10795,6 +11098,7 @@ export function App(): React.JSX.Element {
 			const id = makeNoteId('checklist-note');
 			const doc = await manager.getDocWithSync(id);
 			initChecklistNoteDoc(doc, args.title, cleanedItems, args.previewLinks);
+			setNoteCreatedBy(doc, authUserId);
 			await manager.createNote(id, args.title);
 			// Branch: after create/save, close the new-checklist editor and return to grid.
 			// We intentionally do NOT auto-open the saved note editor here.
@@ -10873,6 +11177,7 @@ export function App(): React.JSX.Element {
 			const docId = manager.resolveRoomName(noteId);
 			const doc = await manager.getDocWithSync(noteId);
 			initTextNoteDoc(doc, title, '', undefined, []);
+			setNoteCreatedBy(doc, authUserId);
 			assignNoteBannerFile(doc, 'reminder.svg');
 			if (sidebarView === 'notes' && activeCollectionId) {
 				assignNoteToCollection(doc, activeCollectionId);
@@ -13568,7 +13873,10 @@ export function App(): React.JSX.Element {
 						loadDrawingDoc={loadDrawingDoc}
 						isPostImportSync={authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId}
 						withheldNoteIds={withheldNoteIds}
-						pendingEditedChanges={pendingEditedChanges}
+						heldRemovedNoteIds={heldRemovedNoteIds}
+						onNoteTrashedRemotely={handleNoteTrashedRemotely}
+						onWithheldNoteAuthorKnown={handleWithheldNoteAuthorKnown}
+						pendingCardChanges={pendingCardChanges}
 						onAllDocsLoaded={() => {
 							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
 								setPendingImportWorkspaceId(null);

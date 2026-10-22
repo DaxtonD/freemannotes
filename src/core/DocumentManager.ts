@@ -228,6 +228,17 @@ export class DocumentManager {
 	// - Namespacing the room name also keeps the client-side IndexedDB cache
 	//   separated per workspace.
 	private activeWorkspaceId: string | null = null;
+	/**
+	 * Who is signed in, for stamping actions onto the notes they affect.
+	 *
+	 * This class manages rooms, not sessions, so it is told rather than asked - the same
+	 * arrangement as `activeWorkspaceId`. Holding it here keeps every `trashNote` caller unchanged
+	 * instead of threading a user id through a dozen call sites, and it means a caller can never
+	 * forget to pass it and silently produce an unattributable tombstone.
+	 *
+	 * Null is a legitimate state (signed out, or before auth resolves) and simply records nothing.
+	 */
+	private actingUserId: string | null = null;
 	private readonly internalOrigin = Symbol('DocumentManagerInternal');
 	private readonly accessOrigin = Symbol('DocumentManagerAccess');
 	// Dedicated origin for automatic updatedAt timestamp writes.
@@ -430,6 +441,17 @@ export class DocumentManager {
 
 	public getAccessOrigin(): symbol {
 		return this.accessOrigin;
+	}
+
+	/**
+	 * Tell the manager who is acting, so structural changes can record it on the note itself.
+	 *
+	 * See `NOTE_TRASHED_BY_FIELD` in noteModel for why the actor belongs on the note rather than on
+	 * a separate event: the event is debounced and carries no note ids, so matching the two up
+	 * needed a time window, and the window was wrong on any connection it was not tuned for.
+	 */
+	public setActingUserId(userId: string | null): void {
+		this.actingUserId = typeof userId === 'string' && userId.length > 0 ? userId : null;
 	}
 
 	public setActiveWorkspaceId(workspaceId: string | null): void {
@@ -1097,7 +1119,10 @@ export class DocumentManager {
 	public async trashNote(noteId: string): Promise<void> {
 		const key = this.normalizeNoteId(noteId);
 		const doc = await this.getDocWithSync(key);
-		setNoteTrashed(doc, true);
+		// The actor goes in the same transaction as the flag, so a collaborator's device can name
+		// whoever did this from the update that told it the note was trashed - rather than waiting
+		// ~10s for a separate event and guessing which note it referred to.
+		setNoteTrashed(doc, true, undefined, this.actingUserId);
 	}
 
 	/**

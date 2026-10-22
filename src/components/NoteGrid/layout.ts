@@ -524,7 +524,19 @@ export function applyTierReorderToCanonicalVisible(
 	tierIsPinned: boolean,
 	isPinned: (id: string) => boolean
 ): string[] {
-	const tierNewOrder = readingOrder.filter((id) => isPinned(id) === tierIsPinned);
+	/**
+	 * Only ids the canonical list already holds may take part. This REORDERS a tier; it must never
+	 * be able to introduce a note into it.
+	 *
+	 * Without this, an id present on screen but absent from the canonical list gets assigned into
+	 * a canonical slot and pushes the last real note straight off the end - so one note is
+	 * committed that should not exist and another silently disappears from the order. That is not
+	 * hypothetical: a card held on the grid as a tombstone (somebody else deleted it, and the user
+	 * has not applied the change yet) is in the rendered columns by design and out of the canonical
+	 * list by design.
+	 */
+	const canonicalSet = new Set(canonicalVisibleOrder);
+	const tierNewOrder = readingOrder.filter((id) => canonicalSet.has(id) && isPinned(id) === tierIsPinned);
 	let tierCursor = 0;
 	return canonicalVisibleOrder.map((id) => {
 		if (isPinned(id) !== tierIsPinned) return id;
@@ -539,6 +551,10 @@ export function reorderByInsertion(
 	placeAfter: boolean
 ): string[] {
 	if (activeId === targetId) return ids.slice();
+	// Reorder, never insert. Splicing in an id that was not in the list would ADD a note to an
+	// order that is about to be committed to Yjs - see applyTierReorderToCanonicalVisible for the
+	// case that makes this reachable.
+	if (!ids.includes(activeId)) return ids.slice();
 	const withoutActive = ids.filter((id) => id !== activeId);
 	const targetIndex = withoutActive.indexOf(targetId);
 	if (targetIndex < 0) return ids.slice();

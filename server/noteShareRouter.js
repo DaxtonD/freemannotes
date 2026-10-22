@@ -1546,6 +1546,16 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								reason: 'note-share-revoked',
 								workspaceId: collaborator.sourceWorkspaceId,
 								docId: collaborator.docId,
+								// WHO did it. Without this the recipient's card could only say "Your
+								// access was revoked" with no avatar and no name - the event is the
+								// one signal that arrives with the actor already known (it is not
+								// put through the 10s note-change debounce), so dropping it here
+								// threw away the only chance to name anybody.
+								//
+								// When a collaborator removes THEMSELVES this is the leaver, which
+								// is also correct: the client discards a removal attributed to the
+								// signed-in user, so leaving a note does not leave you a tombstone.
+								changedUserId: session.userId,
 								// Include the removed collaborator, the acting session, the original
 								// inviter when known, and the source-workspace members so open
 								// collaborator lists converge immediately for everyone managing the note.

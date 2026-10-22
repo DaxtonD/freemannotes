@@ -23,14 +23,19 @@ const assert = require('node:assert/strict');
 const {
 	applyNoteEdited,
 	applyNoteListDiff,
+	applyNoteRemoved,
+	attributeNoteRemoval,
 	clearPendingNoteChanges,
 	createEmptyPendingNoteChanges,
 	diffNoteIds,
 	pendingAddedNoteIds,
+	pendingCardNoteChanges,
 	pendingEditedNoteChanges,
 	pendingRemovedNoteIds,
 	resolveNoteChange,
 	resolveNoteListChangeAuthor,
+	resolveOwnPendingAdd,
+	retractOwnNoteListChanges,
 	NOTE_ORDER_RECONCILE_ORIGIN,
 	summarisePendingNoteChanges,
 } = require('../src/core/pendingNoteChanges.ts');
@@ -42,8 +47,8 @@ const BOB = 'user-bob';
 const empty = () => createEmptyPendingNoteChanges();
 const edited = (state, noteId, byUserId, at = 1000) =>
 	applyNoteEdited(state, { noteId, byUserId, at, authUserId: ME });
-const listDiff = (state, added, removed, byUserId, at = 1000) =>
-	applyNoteListDiff(state, { added, removed, byUserId, at, authUserId: ME });
+const listDiff = (state, added, removed, byUserId, at = 1000, viaReconcile = false) =>
+	applyNoteListDiff(state, { added, removed, byUserId, at, authUserId: ME, viaReconcile });
 
 describe('diffing the note list', () => {
 	it('reports what appeared and what went', () => {
@@ -581,6 +586,420 @@ describe('contributors', () => {
 		let state = edited(empty(), 'note-1', ALICE, 1000);
 		state = resolveNoteChange(state, 'note-1');
 		assert.deepEqual(summarisePendingNoteChanges(state).userIds, []);
+	});
+});
+
+describe('a late attribution takes your own cross-device change back', () => {
+	// The note list diffs locally and immediately; the attribution event is 10s behind it. So a
+	// note made on your phone is ALWAYS held on your laptop first and can only be un-held here.
+	const WINDOW = 15000;
+	const retract = (state, changedUserIds, now = 11000) =>
+		retractOwnNoteListChanges(state, { changedUserIds, authUserId: ME, now, windowMs: WINDOW });
+
+	// How such an entry actually comes into being: remote transaction, no attribution yet.
+	const heldUnattributed = (added, at = 1000) => listDiff(empty(), added, [], null, at);
+
+	it('drops an unattributed add once the event names only you', () => {
+		const state = retract(heldUnattributed(['note-1']), [ME]);
+		assert.equal(state.size, 0);
+	});
+
+	it('NEVER drops a removal, however confidently the event names you', () => {
+		// Reversed deliberately, from a measured failure: a collaborator trashed a note, the
+		// tombstone was created correctly, and 757ms later an event naming only this user deleted
+		// it. Those events are frequent - six in one two-minute session - because this device
+		// writes the registry constantly, so the tombstone's survival was a timing coin-flip.
+		//
+		// Retracting a removal loses somebody else's deletion in silence. Keeping it means your
+		// own deletion from another device lingers as a tombstone until you flush. Only one of
+		// those is recoverable by the user.
+		const state = retract(listDiff(empty(), [], ['note-1'], null, 1000), [ME]);
+		assert.equal(state.size, 1, 'the tombstone must survive');
+		assert.equal(state.get('note-1').kind, 'removed');
+	});
+
+	it('still drops an unattributed ADD, which is what it exists for', () => {
+		const state = retract(heldUnattributed(['note-1']), [ME]);
+		assert.equal(state.size, 0);
+	});
+
+	it('keeps it when the burst names anyone else as well', () => {
+		// Two names means two writers coalesced into one announcement, and there is no way to say
+		// which entry is whose. Anybody else's write had to pass through the server to get here,
+		// so if their note arrived before this event fired they ARE in this list.
+		const state = retract(heldUnattributed(['note-1', 'note-2']), [ME, ALICE]);
+		assert.equal(state.size, 2);
+	});
+
+	it('keeps an entry already credited to somebody else', () => {
+		// Known to be Alice's work. An event naming only you does not explain it.
+		const state = retract(listDiff(empty(), ['note-1'], [], ALICE, 1000), [ME]);
+		assert.equal(state.size, 1);
+	});
+
+	it('keeps an entry older than the window', () => {
+		const state = retract(heldUnattributed(['note-1'], 1000), [ME], 1000 + WINDOW);
+		assert.equal(state.size, 1);
+	});
+
+	it('retracts right up to the edge of the window', () => {
+		const state = retract(heldUnattributed(['note-1'], 1000), [ME], 1000 + WINDOW - 1);
+		assert.equal(state.size, 0);
+	});
+
+	it('covers the real delay, which is the server debounce', () => {
+		// The event cannot arrive sooner than NOTE_CHANGE_DEBOUNCE_MS (10s) after the change, so a
+		// window that does not reach past 10s would never fire for the case this exists for.
+		const state = retract(heldUnattributed(['note-1'], 1000), [ME], 1000 + 10000);
+		assert.equal(state.size, 0, 'a 10s-late event must still be able to claim its entry');
+	});
+
+	it('leaves edits alone', () => {
+		// Edits arrive on a different event, and nothing about an edited note is being withheld.
+		const state = retract(edited(empty(), 'note-1', null, 1000), [ME]);
+		assert.equal(state.size, 1);
+		assert.equal(state.get('note-1').kind, 'edited');
+	});
+
+	it('does nothing without an actor list', () => {
+		const state = retractOwnNoteListChanges(heldUnattributed(['note-1']), {
+			changedUserIds: [],
+			authUserId: ME,
+			now: 11000,
+			windowMs: WINDOW,
+		});
+		assert.equal(state.size, 1);
+	});
+
+	it('does nothing when signed out', () => {
+		const state = retractOwnNoteListChanges(heldUnattributed(['note-1']), {
+			changedUserIds: [ME],
+			authUserId: null,
+			now: 11000,
+			windowMs: WINDOW,
+		});
+		assert.equal(state.size, 1);
+	});
+
+	it('retracts only what the event explains, leaving the rest held', () => {
+		let state = heldUnattributed(['mine'], 1000);
+		state = listDiff(state, ['alices'], [], ALICE, 1000);
+		state = retract(state, [ME]);
+		assert.deepEqual([...state.keys()], ['alices']);
+	});
+
+	it('returns the same object when it retracts nothing', () => {
+		const state = heldUnattributed(['note-1']);
+		assert.equal(retract(state, [ALICE]), state, 'refused, so no re-render');
+		const emptyState = empty();
+		assert.equal(retract(emptyState, [ME]), emptyState, 'nothing pending, so no re-render');
+	});
+
+	it('never mutates the state it was given', () => {
+		const original = heldUnattributed(['note-1']);
+		const snapshot = [...original.entries()];
+		retract(original, [ME]);
+		assert.deepEqual([...original.entries()], snapshot);
+	});
+});
+
+describe('a removal names one person: whoever removed it', () => {
+	// The user's call, and the reason is worth keeping: a card on its way out should say "Alice
+	// deleted this". A stack of chips from people who typed in it earlier reads as though they were
+	// all party to the deletion.
+	it('drops earlier editors when the note is removed', () => {
+		let state = edited(empty(), 'note-1', ALICE, 1000);
+		state = edited(state, 'note-1', BOB, 2000);
+		assert.equal(state.get('note-1').contributors.length, 2);
+		state = listDiff(state, [], ['note-1'], ALICE, 3000);
+		const change = state.get('note-1');
+		assert.equal(change.kind, 'removed');
+		assert.deepEqual(change.contributors.map((c) => c.userId), [ALICE]);
+	});
+
+	it('still names the remover when somebody else edits it on the way out', () => {
+		// foldChange deliberately does not re-attribute removed -> edited.
+		let state = listDiff(empty(), [], ['note-1'], ALICE, 1000);
+		state = edited(state, 'note-1', BOB, 2000);
+		const change = state.get('note-1');
+		assert.equal(change.kind, 'removed');
+		assert.equal(change.byUserId, ALICE);
+		assert.deepEqual(change.contributors.map((c) => c.userId), [ALICE]);
+	});
+
+	it('an unattributed removal has nobody to draw, but is still a removal', () => {
+		const state = listDiff(empty(), [], ['note-1'], null, 1000);
+		assert.equal(state.get('note-1').kind, 'removed');
+		assert.deepEqual(state.get('note-1').contributors, []);
+	});
+});
+
+describe('trashing is a removal, not an edit', () => {
+	// DocumentManager.trashNote writes metadata.trashed and never touches noteOrder, so a
+	// collaborator trashing a note used to arrive as a content change - while the grid filtered the
+	// card out anyway. The chip said "edited" about a card that had vanished.
+	const removed = (state, noteId, byUserId, at = 1000) =>
+		applyNoteRemoved(state, { noteId, byUserId, at, authUserId: ME, reason: 'trashed' });
+
+	it('records a removal', () => {
+		const state = removed(empty(), 'note-1', ALICE);
+		assert.equal(state.get('note-1').kind, 'removed');
+		assert.equal(state.get('note-1').byUserId, ALICE);
+	});
+
+	it('is counted by the chip, because something is being withheld', () => {
+		const summary = summarisePendingNoteChanges(removed(empty(), 'note-1', ALICE));
+		assert.equal(summary.removed, 1);
+		assert.equal(summary.structural, 1);
+	});
+
+	it('shows up in the ids the grid must keep rendering', () => {
+		assert.deepEqual([...pendingRemovedNoteIds(removed(empty(), 'note-1', ALICE))], ['note-1']);
+	});
+
+	it('upgrades an existing edit to a removal', () => {
+		let state = edited(empty(), 'note-1', ALICE, 1000);
+		state = removed(state, 'note-1', ALICE, 2000);
+		assert.equal(state.get('note-1').kind, 'removed');
+	});
+
+	it('is never pending when you trashed it yourself', () => {
+		assert.equal(removed(empty(), 'note-1', ME).size, 0);
+	});
+
+	it('cancels out a note that was added unseen and then trashed', () => {
+		let state = listDiff(empty(), ['note-1'], [], ALICE, 1000);
+		state = removed(state, 'note-1', ALICE, 2000);
+		assert.equal(state.size, 0, 'it arrived and left without ever being seen');
+	});
+});
+
+describe('what wears an overlay', () => {
+	it('is every edited and removed card, but never an added one', () => {
+		let state = listDiff(empty(), ['new-note'], [], ALICE, 1000);
+		state = edited(state, 'edited-note', ALICE, 1000);
+		state = listDiff(state, [], ['gone-note'], BOB, 1000);
+		const cards = pendingCardNoteChanges(state);
+		assert.deepEqual([...cards.keys()].sort(), ['edited-note', 'gone-note']);
+		assert.equal(cards.get('gone-note').kind, 'removed');
+	});
+});
+
+describe('a tombstone is drawn first and named second', () => {
+	// The trashing has to be caught the instant metadata.trashed flips, which is ~10s before the
+	// server says who did it. So the chip starts anonymous and the name arrives later.
+	const removed = (state, noteId, byUserId, at = 1000) =>
+		applyNoteRemoved(state, { noteId, byUserId, at, authUserId: ME, reason: 'trashed' });
+	const attribute = (state, noteId, byUserId, at = 11000) =>
+		attributeNoteRemoval(state, { noteId, byUserId, at, authUserId: ME });
+
+	it('fills in the name on an unattributed removal', () => {
+		let state = removed(empty(), 'note-1', null, 1000);
+		assert.equal(state.get('note-1').byUserId, null);
+		state = attribute(state, 'note-1', ALICE);
+		const change = state.get('note-1');
+		assert.equal(change.kind, 'removed');
+		assert.equal(change.byUserId, ALICE);
+		assert.deepEqual(change.contributors.map((c) => c.userId), [ALICE]);
+	});
+
+	it('keeps the time the note WENT, not the time it was announced', () => {
+		// Otherwise the chip's elapsed label resets from "3m" to "now" when the debounced
+		// announcement for the deletion itself finally lands.
+		let state = removed(empty(), 'note-1', null, 1000);
+		state = attribute(state, 'note-1', ALICE, 11000);
+		assert.equal(state.get('note-1').at, 1000);
+		assert.equal(state.get('note-1').contributors[0].at, 1000);
+	});
+
+	it('retracts it when the announcement says it was you', () => {
+		// You trashed it on your other device. Holding your own deletion behind a prompt is the
+		// same absurdity as holding your own new note.
+		const state = attribute(removed(empty(), 'note-1', null, 1000), 'note-1', ME);
+		assert.equal(state.size, 0);
+	});
+
+	it('does not overwrite a name that is already there', () => {
+		// A removal names whoever removed it; anybody announced afterwards was editing on the way
+		// out.
+		let state = removed(empty(), 'note-1', ALICE, 1000);
+		state = attribute(state, 'note-1', BOB);
+		assert.equal(state.get('note-1').byUserId, ALICE);
+	});
+
+	it('leaves an edited card alone', () => {
+		const state = attribute(edited(empty(), 'note-1', null, 1000), 'note-1', ALICE);
+		assert.equal(state.get('note-1').kind, 'edited');
+		assert.equal(state.get('note-1').byUserId, null, 'this path is only for removals');
+	});
+
+	it('does nothing for a note that is not pending', () => {
+		const state = empty();
+		assert.equal(attribute(state, 'note-404', ALICE), state);
+	});
+
+	it('does nothing without a name to apply', () => {
+		const state = removed(empty(), 'note-1', null, 1000);
+		assert.equal(attribute(state, 'note-1', null), state);
+	});
+
+	it('never mutates the state it was given', () => {
+		const original = removed(empty(), 'note-1', null, 1000);
+		const snapshot = [...original.entries()];
+		attribute(original, 'note-1', ALICE);
+		assert.deepEqual([...original.entries()], snapshot);
+	});
+});
+
+describe('why a note left decides what the card says', () => {
+	const WINDOW = 15000;
+
+	it('records the reason it was given', () => {
+		const trashed = applyNoteRemoved(empty(), {
+			noteId: 'n', byUserId: ALICE, at: 1000, authUserId: ME, reason: 'trashed',
+		});
+		assert.equal(trashed.get('n').removalReason, 'trashed');
+		const revoked = applyNoteRemoved(empty(), {
+			noteId: 'n', byUserId: ALICE, at: 1000, authUserId: ME, reason: 'revoked',
+		});
+		assert.equal(revoked.get('n').removalReason, 'revoked');
+	});
+
+	it('defaults a note-list removal to "deleted"', () => {
+		// An id simply leaving the registry says nothing more specific than that.
+		assert.equal(listDiff(empty(), [], ['n'], ALICE, 1000).get('n').removalReason, 'deleted');
+	});
+
+	it('keeps the SPECIFIC reason when a generic one follows it', () => {
+		// This is the revocation sequence: the event names it as a revocation, and the alias prune
+		// that follows is an anonymous note-list removal. "deleted" must not overwrite "revoked".
+		let state = applyNoteRemoved(empty(), {
+			noteId: 'n', byUserId: ALICE, at: 1000, authUserId: ME, reason: 'revoked',
+		});
+		state = listDiff(state, [], ['n'], null, 1200);
+		assert.equal(state.get('n').removalReason, 'revoked');
+	});
+
+	it('keeps a name it already had when the second arrival is anonymous', () => {
+		// Same sequence. Losing the name here is what left the card unable to say who did it.
+		let state = applyNoteRemoved(empty(), {
+			noteId: 'n', byUserId: ALICE, at: 1000, authUserId: ME, reason: 'revoked',
+		});
+		state = listDiff(state, [], ['n'], null, 1200);
+		assert.equal(state.get('n').byUserId, ALICE);
+		assert.deepEqual(state.get('n').contributors.map((c) => c.userId), [ALICE]);
+	});
+});
+
+describe('a reconcile-born entry survives your own attribution', () => {
+	// THE BUG FROM TESTING. Somebody revokes Daxton's access; HIS OWN device prunes the alias out
+	// of its own registry; the server sees that write and names him as the actor, quite correctly.
+	// Ten seconds later the event arrives naming nobody but him, and the retraction threw away the
+	// tombstone that was explaining the revocation - the chip appeared and then vanished by itself.
+	const WINDOW = 15000;
+	const retract = (state, now = 11000) =>
+		retractOwnNoteListChanges(state, { changedUserIds: [ME], authUserId: ME, now, windowMs: WINDOW });
+
+	it('does not retract a removal this device wrote as a reconcile', () => {
+		const state = retract(listDiff(empty(), [], ['n'], null, 1000, true));
+		assert.equal(state.size, 1, 'the tombstone has to stay');
+		assert.equal(state.get('n').kind, 'removed');
+	});
+
+	it('does not retract an explicit revocation entry either', () => {
+		const state = retract(applyNoteRemoved(empty(), {
+			noteId: 'n', byUserId: null, at: 1000, authUserId: ME, reason: 'revoked', viaReconcile: true,
+		}));
+		assert.equal(state.size, 1);
+	});
+
+	it('STILL retracts an ordinary remote change, which is the point of the feature', () => {
+		// The cross-device own-note case must keep working: that diff is a remote transaction, not
+		// a reconcile write, so it stays eligible.
+		assert.equal(retract(listDiff(empty(), ['n'], [], null, 1000)).size, 0);
+	});
+
+	it('immunity is sticky across a second arrival', () => {
+		let state = listDiff(empty(), [], ['n'], null, 1000, true);
+		state = listDiff(state, [], ['n'], null, 1200);
+		assert.equal(state.get('n').viaReconcile, true);
+		assert.equal(retract(state).size, 1);
+	});
+});
+
+describe('the note itself says who made it', () => {
+	// The replacement for the time-window retraction on the path that matters. Driven by the note's
+	// own createdByUserId, so it names exactly ONE note and needs no window - which is what makes
+	// it behave the same on fibre and on a phone with two bars.
+	const held = (ids, at = 1000) => listDiff(empty(), ids, [], null, at);
+	const resolve = (state, noteId, authorUserId) =>
+		resolveOwnPendingAdd(state, { noteId, authorUserId, authUserId: ME });
+
+	it('releases a held note that says I created it', () => {
+		assert.equal(resolve(held(['mine']), 'mine', ME).size, 0);
+	});
+
+	it('keeps a held note somebody else created', () => {
+		const state = resolve(held(['theirs']), 'theirs', ALICE);
+		assert.equal(state.size, 1);
+	});
+
+	it('keeps it when the note has no author - a legacy note', () => {
+		// These are exactly the notes the old retraction still has to cover.
+		const state = held(['old']);
+		assert.equal(resolve(state, 'old', null), state, 'unchanged, same object');
+	});
+
+	it('releases only the note named, leaving others held', () => {
+		let state = held(['mine', 'alsomine'], 1000);
+		state = resolve(state, 'mine', ME);
+		assert.deepEqual([...state.keys()], ['alsomine']);
+	});
+
+	it('does not touch an entry already credited to somebody else', () => {
+		// The note's author and whoever put it on your grid are not always the same person, and a
+		// known name beats an inferred one.
+		const state = listDiff(empty(), ['shared'], [], ALICE, 1000);
+		assert.equal(resolve(state, 'shared', ME).size, 1);
+	});
+
+	it('never releases a REMOVAL', () => {
+		// The field says who MADE the note, not who got rid of it.
+		const state = listDiff(empty(), [], ['gone'], null, 1000);
+		assert.equal(resolve(state, 'gone', ME).size, 1);
+	});
+
+	it('never releases an EDIT', () => {
+		const state = edited(empty(), 'note-1', null, 1000);
+		assert.equal(resolve(state, 'note-1', ME).size, 1);
+	});
+
+	it('is unaffected by how old the entry is - there is no window', () => {
+		// The whole point. A note held for ten minutes on a bad connection still releases the
+		// instant its author becomes readable.
+		const state = held(['mine'], 1);
+		assert.equal(resolveOwnPendingAdd(state, {
+			noteId: 'mine', authorUserId: ME, authUserId: ME,
+		}).size, 0);
+	});
+
+	it('does nothing when signed out', () => {
+		const state = held(['mine']);
+		assert.equal(resolveOwnPendingAdd(state, {
+			noteId: 'mine', authorUserId: ME, authUserId: null,
+		}), state);
+	});
+
+	it('returns the same object when it changes nothing', () => {
+		const state = held(['mine']);
+		assert.equal(resolve(state, 'absent', ME), state);
+	});
+
+	it('never mutates the state it was given', () => {
+		const original = held(['mine']);
+		const snapshot = [...original.entries()];
+		resolve(original, 'mine', ME);
+		assert.deepEqual([...original.entries()], snapshot);
 	});
 });
 

@@ -48,8 +48,11 @@
 
 	   Attribute selector, not a class, because the overlay's classes are hashed in a different CSS
 	   module and cannot be named from this file. */
-	.card:hover [data-note-change-overlay],
-	.card:focus-within [data-note-change-overlay] {
+	/* Scoped to "true" so a REMOVED overlay is excluded. That one is a tombstone: fading it out
+	   under the pointer would make a card that is actually gone look alive and usable again, and
+	   there is no action dock underneath worth revealing. */
+	.card:hover [data-note-change-overlay="true"],
+	.card:focus-within [data-note-change-overlay="true"] {
 		opacity: 0;
 	}
 }
