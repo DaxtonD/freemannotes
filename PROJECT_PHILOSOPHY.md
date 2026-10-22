@@ -35,6 +35,42 @@ Whenever possible:
 
 IndexedDB, Yjs, Service Workers, background synchronization, and local persistence are foundational technologies, not optional enhancements.
 
+**This is a requirement to weigh in every change, not a feature area to remember when touching sync.**
+
+#### A Hardcoded Time Window Is Usually A Missing Piece Of Data
+
+The most common way offline-first gets violated is a magic number. This app runs on a gigabit wired
+desktop and on a phone with two bars, and a delay tuned on the first is a silent defect on the
+second — nothing throws, nothing logs, the feature simply stops working for the people on the worse
+connection.
+
+Two kinds of timer, and only one of them is legitimate:
+
+* **Fine.** A duration that describes something human and network-independent. "They have stopped
+  typing." "That was the browser's ghost click, not a second tap." "This is taking long enough that
+  we should say so." The quantity *is* the meaning.
+* **Suspect.** A timer standing in for a **missing identifier** — used to correlate two events that
+  have nothing in common but roughly when they happened — or approximating a state that could have
+  been observed directly.
+
+For the second kind, the real defect is almost always absent data, and the fix is to make the
+answer travel *with* the thing it describes. Tag the write with its cause rather than inferring the
+cause from its timing. Read what actually changed rather than when it arrived. Record who did
+something on the thing they did it to.
+
+Two worked examples from this codebase, both of which shipped as bugs first:
+
+* A note's metadata recorded `createdAt` but not **who created it**, so a second device could not
+  tell its own user's new note from a collaborator's and had to correlate against a debounced
+  server event. No window is correct on every connection; recording the author removes the question.
+* "Did somebody trash this note" was read from a Yjs key's current value, which is identical on a
+  live edit and on a cold load. No threshold can separate those; the key's `action` (`add` versus
+  `update`) separates them exactly, on any connection, every time.
+
+If a window is genuinely unavoidable, derive it from something real — a documented server-side
+debounce, a measured p99 — write the derivation in the comment beside it, and state which direction
+it fails in. Never pick a round number because it felt safe.
+
 ---
 
 ### Real-Time Means Truly Real-Time
