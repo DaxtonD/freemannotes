@@ -7548,6 +7548,52 @@ export function App(): React.JSX.Element {
 	}, [authUserId]);
 
 	/**
+	 * Somebody else added or removed an attachment - an image, a document, or a link preview.
+	 *
+	 * This is the gap he found by observation: adding a link or a drawing darkened the card for
+	 * collaborators and adding an image or a document did not. Nothing to do with the kind of
+	 * attachment. Drawings write `drawingIds` into the note's Yjs doc and a link's URL goes into
+	 * its text, so both produce a Yjs update, which is what becomes `note-changed`. Images and
+	 * documents are uploaded over REST into SQL and never touch the document, so nothing fired.
+	 * The mark was tracking "did the Yjs document change" rather than "did somebody change this".
+	 *
+	 * An event with no actor is deliberately ignored. The server attaches one only to things a
+	 * PERSON did, so OCR completing, a preview being generated and a format conversion all stay
+	 * silent - nobody did those, and they can arrive minutes later. Keeping the test here as
+	 * "is there an actor" rather than a list of reason strings means a background event added
+	 * later is silent without anyone remembering to update this.
+	 *
+	 * `applyNoteEdited` drops your own changes, so uploading something does not mark your own card.
+	 */
+	const recordRemoteNoteMediaEdit = React.useCallback((docId: string, actorUserId: string | null) => {
+		if (!actorUserId) return;
+		if (!pendingChangesArmedRef.current) return;
+		// The grid keys a note shared WITH you by its placement alias, not by the room it lives
+		// in - that room belongs to the owner's workspace. Same translation the note-changed
+		// branch does.
+		const aliasForRoom = sharedPlacementsRef.current.find(
+			(placement) => String(placement.roomId || '') === docId
+		);
+		const separatorIndex = docId.indexOf(':');
+		const gridNoteId = aliasForRoom
+			? aliasForRoom.aliasId
+			: (separatorIndex > 0 ? docId.slice(separatorIndex + 1) : '');
+		if (!gridNoteId) return;
+		recordPendingChangeTrace('media-edit', {
+			note: gridNoteId.slice(0, 8),
+			by: actorUserId.slice(0, 8),
+		});
+		setPendingNoteChanges((state) => applyNoteEdited(state, {
+			noteId: gridNoteId,
+			byUserId: actorUserId,
+			at: Date.now(),
+			authUserId: authUserId ?? null,
+		}));
+	}, [authUserId]);
+	const recordRemoteNoteMediaEditRef = React.useRef(recordRemoteNoteMediaEdit);
+	recordRemoteNoteMediaEditRef.current = recordRemoteNoteMediaEdit;
+
+	/**
 	 * A held note turned out to be one the signed-in user made, according to the note itself.
 	 *
 	 * This is the replacement for the 15s retraction window on the path that actually matters. The
@@ -8697,6 +8743,12 @@ export function App(): React.JSX.Element {
 							);
 						}
 						if (isNoteMediaMetadataEvent && typeof payload.docId === 'string') {
+							// Mark the card first: the refresh below is debounced, and whether a
+							// collaborator's change is announced should not depend on it.
+							recordRemoteNoteMediaEditRef.current(
+								payload.docId,
+								typeof payload.changedUserId === 'string' ? payload.changedUserId : null
+							);
 							const existingTimer = pendingNoteMediaTimers.get(payload.docId);
 							if (existingTimer) {
 								window.clearTimeout(existingTimer);
@@ -8712,6 +8764,12 @@ export function App(): React.JSX.Element {
 							return;
 						}
 						if (isNoteDocumentsMetadataEvent && typeof payload.docId === 'string') {
+							// Mark the card first: the refresh below is debounced, and whether a
+							// collaborator's change is announced should not depend on it.
+							recordRemoteNoteMediaEditRef.current(
+								payload.docId,
+								typeof payload.changedUserId === 'string' ? payload.changedUserId : null
+							);
 							const existingTimer = pendingNoteDocumentTimers.get(payload.docId);
 							if (existingTimer) {
 								window.clearTimeout(existingTimer);
@@ -8739,6 +8797,12 @@ export function App(): React.JSX.Element {
 							return;
 						}
 						if (isNoteLinksMetadataEvent && typeof payload.docId === 'string') {
+							// Mark the card first: the refresh below is debounced, and whether a
+							// collaborator's change is announced should not depend on it.
+							recordRemoteNoteMediaEditRef.current(
+								payload.docId,
+								typeof payload.changedUserId === 'string' ? payload.changedUserId : null
+							);
 							const existingTimer = pendingNoteLinkTimers.get(payload.docId);
 							if (existingTimer) {
 								window.clearTimeout(existingTimer);

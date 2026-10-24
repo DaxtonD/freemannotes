@@ -223,7 +223,13 @@ async function ensureMediaAccess(prisma, session, rawDocId, { requireEdit = fals
  * Publishing nothing is the correct response to a failed lookup. Silence costs somebody a refresh;
  * the alternative costs everybody a note id.
  */
-async function publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, access, reason, recipients = null) {
+async function publishNoteMediaMetadataChange(
+	onWorkspaceMetadataChanged,
+	access,
+	reason,
+	recipients = null,
+	actorUserId = null
+) {
 	if (typeof onWorkspaceMetadataChanged !== 'function' || !access) return;
 	try {
 		const userIds = recipients
@@ -240,6 +246,19 @@ async function publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, access
 			workspaceId: access.sourceWorkspaceId,
 			docId: access.docId,
 			userIds,
+			/**
+			 * Present only when a PERSON did this, and that is what the client keys off to mark
+			 * the card as changed.
+			 *
+			 * OCR completing, a preview being generated, an office file being converted: nobody
+			 * did those, and they can land minutes after the upload. Attributing them would put
+			 * "Meshuga changed this note" on a card because a queue drained.
+			 *
+			 * Carrying the distinction here rather than in a list of reason strings on the client
+			 * means a background event added later is silent by default, and a new user action is
+			 * attributed by passing the session. Both defaults fail the right way.
+			 */
+			changedUserId: typeof actorUserId === 'string' && actorUserId ? actorUserId : null,
 		});
 	} catch (error) {
 		console.warn('[note-media] metadata event publish failed:', error && error.message ? error.message : String(error));
@@ -947,8 +966,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 	 * Every media event goes through here so none can be published without a recipient list.
 	 * Adding a call that forgets the filter is the mistake this wrapper exists to make hard.
 	 */
-	const publishNoteMediaMetadataChangeWithRecipients = (emit, access, reason) =>
-		publishNoteMediaMetadataChange(emit, access, reason, mediaRecipients);
+	const publishNoteMediaMetadataChangeWithRecipients = (emit, access, reason, actorUserId = null) =>
+		publishNoteMediaMetadataChange(emit, access, reason, mediaRecipients, actorUserId);
 	void sweepStaleIncomingUploads(path.join(uploadDir, INCOMING_DIR_NAME));
 
 	// Office → PDF only when a Gotenberg container is configured (GOTENBERG_URL). Optional like Redis.
@@ -1289,7 +1308,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						links: Array.isArray(body.links) ? body.links : [],
 						hydrate: false,
 					});
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-links-updated');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-links-updated', session.userId);
 					jsonResponse(res, 200, { links: pendingRows.map(mapNoteLink), count: pendingRows.length });
 					// Resolve URL metadata in the background. When hydration
 					// finishes, emit a second event so all clients refresh and
@@ -1305,7 +1324,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 								// hydrateNoteLinkRows returns the original array reference when
 								// nothing changed; a new array means at least one row was mutated.
 								if (hydratedRows !== pendingRows) {
-									await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-links-updated');
+									await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-links-updated', session.userId);
 								}
 							} catch (err) {
 								console.error('[note-links] background hydration error:', err && err.message ? err.message : String(err));
@@ -1439,7 +1458,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						fileName: imageUrl,
 						sourceUrl: imageUrl,
 					});
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created', session.userId);
 					jsonResponse(res, 201, { image: mapNoteImage(image) });
 				} catch (err) {
 					console.error('[note-media] import-url error:', err.message);
@@ -1525,7 +1544,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						});
 						images.push(mapNoteImage(image));
 					}
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created', session.userId);
 					jsonResponse(res, 201, { images, count: images.length });
 				} catch (err) {
 					console.error('[note-media] upload error:', err.message);
@@ -1585,7 +1604,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						const mapped = mapNoteDocument(documentRecord);
 						if (mapped) documents.push(mapped);
 					}
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-created');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-created', session.userId);
 					conversionQueue.notify();
 					thumbnailQueue.scanSoon();
 					ocrQueue.scanSoon();
@@ -1629,7 +1648,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						fs.promises.rm(path.join(uploadDir, image.originalPath), { force: true }),
 						fs.promises.rm(path.join(uploadDir, image.thumbnailPath), { force: true }),
 					]);
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-media-deleted');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-media-deleted', session.userId);
 					jsonResponse(res, 200, { ok: true, imageId: image.id });
 				} catch (err) {
 					console.error('[note-media] delete error:', err.message);
@@ -1730,7 +1749,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						loadNoteDocumentWithVersions(prisma, noteDocument.id).then((refreshed) => buildVersionListResponse(prisma, refreshed)),
 						prisma.noteDocument.findUnique({ where: { id: noteDocument.id }, include: LATEST_DOCUMENT_VERSION_INCLUDE }),
 					]);
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-version-added');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-version-added', session.userId);
 					conversionQueue.notify();
 					thumbnailQueue.scanSoon();
 					ocrQueue.scanSoon();
@@ -1769,7 +1788,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					}
 					await deleteDocumentVersions(prisma, uploadDir, [decision.version]);
 					const refreshed = await loadNoteDocumentWithVersions(prisma, noteDocument.id);
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-version-deleted');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-version-deleted', session.userId);
 					jsonResponse(res, 200, { ok: true, ...(await buildVersionListResponse(prisma, refreshed)) });
 				} catch (err) {
 					console.error('[note-documents] version delete error:', err.message);
@@ -1819,7 +1838,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						version.thumbnailPath,
 						version.viewPdfPath,
 					].filter(Boolean).map((relativePath) => fs.promises.rm(path.join(uploadDir, relativePath), { force: true }))));
-					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-deleted');
+					await publishNoteMediaMetadataChangeWithRecipients(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-deleted', session.userId);
 					jsonResponse(res, 200, { ok: true, documentId: noteDocument.id });
 				} catch (err) {
 					console.error('[note-documents] delete error:', err.message);

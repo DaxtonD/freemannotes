@@ -103,6 +103,62 @@ describe('a media event names its recipients', () => {
 	});
 });
 
+describe('only a person gets attributed', () => {
+	// Task 3. A card marked "Meshuga changed this note" because an OCR queue drained would be
+	// wrong, so the distinction travels in the data: the server attaches an actor only to things
+	// somebody did, and the client marks the card only when an event names one. A background event
+	// added later is therefore silent without the client needing a list of reason strings.
+	const userActions = [
+		'note-media-created',
+		'note-media-deleted',
+		'note-documents-created',
+		'note-documents-deleted',
+		'note-documents-version-added',
+		'note-documents-version-deleted',
+		'note-links-updated',
+	];
+	const backgroundWork = [
+		'note-documents-ocr',
+		'note-documents-ocr-progress',
+		'note-documents-previewed',
+		'note-documents-converted',
+	];
+
+	it('names the actor when one is supplied', async () => {
+		for (const reason of userActions) {
+			const { events, emit } = recorder();
+			await publishNoteMediaMetadataChange(emit, ACCESS, reason, resolverWith(), 'user-meshuga');
+			assert.equal(events[0].changedUserId, 'user-meshuga', reason);
+		}
+	});
+
+	it('sends a null actor for background work, not a missing field', async () => {
+		// Null and absent behave the same on the client, but an explicit null says the question
+		// was asked and answered rather than forgotten.
+		for (const reason of backgroundWork) {
+			const { events, emit } = recorder();
+			await publishNoteMediaMetadataChange(emit, ACCESS, reason, resolverWith());
+			assert.equal(events.length, 1, reason);
+			assert.equal(events[0].changedUserId, null, reason);
+		}
+	});
+
+	it('still delivers background events to the right people', async () => {
+		// Anonymous is not the same as unsent - the attachment list still has to refresh.
+		const { events, emit } = recorder();
+		await publishNoteMediaMetadataChange(emit, ACCESS, 'note-documents-ocr', resolverWith({ members: ['alice'] }));
+		assert.deepEqual(events[0].userIds, ['alice']);
+	});
+
+	it('ignores an empty or non-string actor', async () => {
+		for (const bad of ['', null, undefined, 42, {}]) {
+			const { events, emit } = recorder();
+			await publishNoteMediaMetadataChange(emit, ACCESS, 'note-media-created', resolverWith(), bad);
+			assert.equal(events[0].changedUserId, null, String(bad));
+		}
+	});
+});
+
 describe('it publishes nothing rather than broadcasting', () => {
 	it('stays silent when the lookup fails', async () => {
 		// Silence costs somebody a refresh. The alternative costs everybody a note id.
