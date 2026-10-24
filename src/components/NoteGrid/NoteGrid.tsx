@@ -65,6 +65,7 @@ import {
 	getGridLayoutForViewport,
 	MOBILE_GRID_EDGE_MARGIN_PX,
 	mergeVisibleIdsIntoLayoutOrder,
+	reinsertIdsAtPreviousPositions,
 	mergeVisibleOrderIntoFullOrder,
 	pickRenderedDisplayOrder,
 	readCssPxVariable,
@@ -92,7 +93,7 @@ import {
 	writeWorkspaceRenderSnapshot,
 } from '../../core/workspaceRenderSnapshot';
 import { digestShellCanRender } from '../../core/noteDigestProjection';
-import { readNoteCreatedBy, readNoteTrashedBy } from '../../core/noteModel';
+import { readNoteCreatedBy, readNoteTrashedBy, readTrashState } from '../../core/noteModel';
 import {
 	buildNoteChangeChipRow,
 	type NoteChangeChipIdentity,
@@ -304,13 +305,14 @@ export type NoteGridProps = {
 		actorUserId: string | null;
 	}) => void;
 	/**
-	 * A held note's own `createdByUserId` has become readable.
+	 * What a held note's own document says about it, once that document is readable.
 	 *
-	 * Reported from here because the grid owns the loaded documents. It is what lets a note you
-	 * made on another device be released by DATA rather than by a timer - see
-	 * `resolveOwnPendingAdd`.
+	 * Reported from here because the grid owns the loaded documents. The author is what lets a note
+	 * you made on another device be released by DATA rather than by a timer (see
+	 * `resolveOwnPendingAdd`), and `trashed` is what stops a held note that has since been deleted
+	 * from sitting there as a promise the grid cannot keep.
 	 */
-	onWithheldNoteAuthorKnown?: (noteId: string, authorUserId: string) => void;
+	onWithheldNoteResolved?: (noteId: string, info: { authorUserId: string | null; trashed: boolean }) => void;
 	/** Fires whenever pendingNoteWsSync changes value. */
 	/**
 	 * Fires whenever the number of note rooms still awaiting their first WS sync changes.
@@ -1684,8 +1686,12 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	// down and rebuild ninety-odd observers on any render that produced a new function identity.
 	const onNoteTrashedRemotelyRef = React.useRef(props.onNoteTrashedRemotely);
 	onNoteTrashedRemotelyRef.current = props.onNoteTrashedRemotely;
-	const onWithheldNoteAuthorKnownRef = React.useRef(props.onWithheldNoteAuthorKnown);
-	onWithheldNoteAuthorKnownRef.current = props.onWithheldNoteAuthorKnown;
+	const onWithheldNoteResolvedRef = React.useRef(props.onWithheldNoteResolved);
+	onWithheldNoteResolvedRef.current = props.onWithheldNoteResolved;
+	// Read at call time by publishViewportRooms, which runs from observer callbacks and must keep
+	// a stable identity.
+	const withheldNoteIdsRef = React.useRef(props.withheldNoteIds);
+	withheldNoteIdsRef.current = props.withheldNoteIds;
 	const [layoutOrderIds, setLayoutOrderIds] = React.useState<string[]>([]);
 	// Lazy-initialize layout state from the current viewport so the very first render
 	// already uses the correct column count and card widths — eliminating the jarring
@@ -2627,22 +2633,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 		 * downstream, handled by `keepNoteIds` on getVisibleNotes.
 		 */
 		if (held && held.size > 0) {
-			const present = new Set(result);
-			const missing = [...held].filter((id) => !present.has(id));
-			if (missing.length > 0) {
-				const previous = lastOrderedIdsRef.current;
-				const next = [...result];
-				// Ascending by old index, so each splice lands before the ones still to come and
-				// two adjacent removals do not swap places.
-				const byOldIndex = missing
-					.map((id) => ({ id, index: previous.indexOf(id) }))
-					.sort((left, right) => left.index - right.index);
-				for (const entry of byOldIndex) {
-					const at = entry.index < 0 ? next.length : Math.min(entry.index, next.length);
-					next.splice(at, 0, entry.id);
-				}
-				result = next;
-			}
+			result = reinsertIdsAtPreviousPositions(result, lastOrderedIdsRef.current, held);
 		}
 		lastOrderedIdsRef.current = result;
 		return result;
@@ -3061,9 +3052,26 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				}
 			}
 			// Display layer may apply pin tier sort; Yjs merge uses nextCanonicalVisible only.
-			const displayOrderAfterCommit = shouldPrioritizePinnedForDisplay
+			const sortedAfterCommit = shouldPrioritizePinnedForDisplay
 				? applyPinnedDisplaySort(nextCanonicalVisible, isPinnedNote)
 				: nextCanonicalVisible;
+			/**
+			 * Here the commit order and the DISPLAY order have to part company.
+			 *
+			 * Held tombstones are excluded from `canonicalVisibleIdsFiltered` because that list is
+			 * what gets written to Yjs, and letting a deleted id into it put the dead note back
+			 * into the shared registry for everybody. But `renderedIds` reads the committed order
+			 * straight after a drop - so the tombstone stopped being drawn the instant a
+			 * neighbouring card shifted, which is exactly what it exists to prevent. Reported from
+			 * testing: "when the darkened note neighbour-shifts, it's removed from the grid".
+			 *
+			 * So they go back into the order used for drawing, at the positions they held on
+			 * screen, and stay out of the one used for writing.
+			 */
+			const heldForDisplay = props.heldRemovedNoteIds;
+			const displayOrderAfterCommit = heldForDisplay && heldForDisplay.size > 0
+				? reinsertIdsAtPreviousPositions(sortedAfterCommit, renderedIdsRef.current, heldForDisplay)
+				: sortedAfterCommit;
 			pendingCommittedVisibleOrderRef.current = displayOrderAfterCommit.slice();
 			setLayoutOrderIds((previous) => (arraysEqual(previous, displayOrderAfterCommit) ? previous : displayOrderAfterCommit));
 			repackReasonRef.current = 'drag-drop';
@@ -3125,7 +3133,7 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				noteOrder.insert(0, next);
 			});
 		},
-		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, props.viewMode, canonicalVisibleIdsFiltered, shouldPrioritizePinnedForDisplay]
+		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, props.heldRemovedNoteIds, props.viewMode, canonicalVisibleIdsFiltered, shouldPrioritizePinnedForDisplay]
 	);
 
 	React.useLayoutEffect(() => {
@@ -3390,13 +3398,20 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	React.useEffect(() => {
 		const withheld = props.withheldNoteIds;
 		if (!withheld || withheld.size === 0) return;
-		const report = onWithheldNoteAuthorKnownRef.current;
+		const report = onWithheldNoteResolvedRef.current;
 		if (!report) return;
 		for (const id of withheld) {
 			const doc = docsById[id] ?? manager.peekDoc(id);
 			if (!doc) continue;
 			const author = readNoteCreatedBy(doc);
-			if (author) report(id, author);
+			const { trashed } = readTrashState(doc);
+			// `trashed` matters as much as the author here. A device meeting the note for the first
+			// time finds the flag ALREADY true - there is no transition for the metadata observer
+			// to notice - so nothing else in the system will ever work out that the held note has
+			// since been thrown away. Reported from a real test: a shared note was accepted on one
+			// device and trashed by its owner, and the other device kept offering it.
+			if (!author && !trashed) continue;
+			report(id, { authorUserId: author, trashed });
 		}
 	}, [props.withheldNoteIds, docsById, manager, metadataVersion]);
 
@@ -3467,15 +3482,42 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 			if (rightPosition === undefined) return -1;
 			return leftPosition - rightPosition;
 		});
-		const signature = `${visible.join('\u001f')}||${recentNoteIdsRef.current.join('\u001f')}`;
+		/**
+		 * HELD notes get a socket too, although nothing draws them.
+		 *
+		 * A held note is one we have an open question about - is it mine, and does it still
+		 * exist - and the user is about to be asked whether to put it on the grid. Without a
+		 * socket the answer can never arrive: reported from testing, a note held on a phone while
+		 * its owner trashed it kept being offered forever, because the phone was not listening to
+		 * the room it was offering.
+		 *
+		 * Nothing else covers it. The viewport list comes from an IntersectionObserver over
+		 * RENDERED cards, which a held note is not, and the "no local content yet" force-connect
+		 * drains itself as soon as the room syncs.
+		 *
+		 * Appended AFTER the visible cards deliberately. Rooms are connected front to back at
+		 * roughly 4.3 handshakes a second, so position decides who waits - and the cards somebody
+		 * is actually looking at keep the front of the queue.
+		 */
+		const held = withheldNoteIdsRef.current;
+		const withSockets = held && held.size > 0
+			? uniqueIds([...visible, ...held])
+			: visible;
+		const signature = `${withSockets.join('\u001f')}||${recentNoteIdsRef.current.join('\u001f')}`;
 		if (signature === publishedViewportSignatureRef.current) return;
 		publishedViewportSignatureRef.current = signature;
-		manager.setViewportRooms(visible, recentNoteIdsRef.current);
+		manager.setViewportRooms(withSockets, recentNoteIdsRef.current);
 	}, [isGridVisible, manager]);
 
+	// Held ids are part of the published set now, so a change to them has to republish - without
+	// this a newly held note waits for an unrelated viewport event before anyone connects it.
+	const withheldRoomsSignature = React.useMemo(
+		() => (props.withheldNoteIds ? [...props.withheldNoteIds].sort().join('\u001f') : ''),
+		[props.withheldNoteIds]
+	);
 	React.useEffect(() => {
 		publishViewportRooms();
-	}, [publishViewportRooms, recentNoteIdsSignature]);
+	}, [publishViewportRooms, recentNoteIdsSignature, withheldRoomsSignature]);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return;

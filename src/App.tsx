@@ -184,6 +184,7 @@ import {
 	clearPendingNoteChanges,
 	createEmptyPendingNoteChanges,
 	diffNoteIds,
+	dropObsoleteWithheldNote,
 	pendingAddedNoteIds,
 	pendingCardNoteChanges,
 	pendingRemovedNoteIds,
@@ -7553,11 +7554,28 @@ export function App(): React.JSX.Element {
 	 * retraction had to guess which held entries a debounced, id-less event explained; this names
 	 * one specific note and fires when its data arrives, so it works the same on any connection.
 	 */
-	const handleWithheldNoteAuthorKnown = React.useCallback((noteId: string, authorUserId: string) => {
+	const handleWithheldNoteResolved = React.useCallback((
+		noteId: string,
+		info: { authorUserId: string | null; trashed: boolean }
+	) => {
 		setPendingNoteChanges((state) => {
+			/**
+			 * Obsolete beats whose-it-is. A held note that has since been trashed is not worth
+			 * offering whoever made it: applying it would show the card and then hide it again,
+			 * moving the grid twice to say nothing. Same conclusion the added-then-removed rule
+			 * already reaches when both halves happen to arrive as list changes.
+			 */
+			if (info.trashed) {
+				const next = dropObsoleteWithheldNote(state, noteId);
+				if (next !== state) {
+					recordPendingChangeTrace('withheld-dropped-trashed', { note: noteId.slice(0, 8) });
+				}
+				return next;
+			}
+			if (!info.authorUserId) return state;
 			const next = resolveOwnPendingAdd(state, {
 				noteId,
-				authorUserId,
+				authorUserId: info.authorUserId,
 				authUserId: authUserId ?? null,
 			});
 			if (next !== state) {
@@ -13875,7 +13893,7 @@ export function App(): React.JSX.Element {
 						withheldNoteIds={withheldNoteIds}
 						heldRemovedNoteIds={heldRemovedNoteIds}
 						onNoteTrashedRemotely={handleNoteTrashedRemotely}
-						onWithheldNoteAuthorKnown={handleWithheldNoteAuthorKnown}
+						onWithheldNoteResolved={handleWithheldNoteResolved}
 						pendingCardChanges={pendingCardChanges}
 						onAllDocsLoaded={() => {
 							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {

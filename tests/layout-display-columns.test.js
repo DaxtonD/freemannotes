@@ -24,6 +24,7 @@ const {
 	applyTierReorderByInsertion,
 	applyTierReorderToCanonicalVisible,
 	mergeVisibleOrderIntoFullOrder,
+	reinsertIdsAtPreviousPositions,
 	reorderByInsertion,
 	resolveGridDropOrder,
 } = require('../src/components/NoteGrid/layout.ts');
@@ -405,5 +406,61 @@ describe('mergeVisibleOrderIntoFullOrder: why tombstones stay out of the commit 
 	it('passes the full order through untouched when the visible set is clean', () => {
 		const next = mergeVisibleOrderIntoFullOrder(['A', 'B', 'hidden'], ['A', 'B'], ['B', 'A']);
 		assert.deepEqual(next, ['B', 'A', 'hidden']);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reinsertIdsAtPreviousPositions - putting held cards back where they were.
+//
+// A card somebody else deleted is kept on the grid as a dimmed tombstone, but it
+// is deliberately absent from the order that gets written to Yjs (letting a dead
+// id in there put the note back into the shared registry for everybody). The
+// order used for DRAWING has to put it back, and appending it would move the
+// card - which is the one thing the tombstone exists to prevent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('reinsertIdsAtPreviousPositions', () => {
+	it('restores an id to the index it used to hold', () => {
+		const result = reinsertIdsAtPreviousPositions(['A', 'C'], ['A', 'B', 'C'], ['B']);
+		assert.deepEqual(result, ['A', 'B', 'C']);
+	});
+
+	it('restores several without them swapping places', () => {
+		const result = reinsertIdsAtPreviousPositions(['A', 'D'], ['A', 'B', 'C', 'D'], ['C', 'B']);
+		assert.deepEqual(result, ['A', 'B', 'C', 'D']);
+	});
+
+	it('keeps a restored id at the front when that is where it was', () => {
+		assert.deepEqual(reinsertIdsAtPreviousPositions(['B'], ['A', 'B'], ['A']), ['A', 'B']);
+	});
+
+	it('puts an id with no previous position last', () => {
+		// The only honest answer when there is nothing to restore it to.
+		assert.deepEqual(reinsertIdsAtPreviousPositions(['A'], ['A'], ['Z']), ['A', 'Z']);
+	});
+
+	it('ignores ids already present', () => {
+		const next = ['A', 'B'];
+		assert.deepEqual(reinsertIdsAtPreviousPositions(next, ['A', 'B'], ['B']), ['A', 'B']);
+	});
+
+	it('returns the input untouched when there is nothing to do', () => {
+		const next = ['A', 'B'];
+		assert.equal(reinsertIdsAtPreviousPositions(next, ['A', 'B'], []), next);
+	});
+
+	it('does not mutate what it was given', () => {
+		const next = ['A', 'C'];
+		const previous = ['A', 'B', 'C'];
+		reinsertIdsAtPreviousPositions(next, previous, ['B']);
+		assert.deepEqual(next, ['A', 'C']);
+		assert.deepEqual(previous, ['A', 'B', 'C']);
+	});
+
+	it('survives a previous order that no longer resembles the new one', () => {
+		// A sync can land mid-drag; this must not throw or duplicate.
+		const result = reinsertIdsAtPreviousPositions(['X', 'Y'], ['A', 'B'], ['B']);
+		assert.equal(result.length, 3);
+		assert.equal(new Set(result).size, 3);
 	});
 });

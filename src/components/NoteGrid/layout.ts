@@ -411,6 +411,37 @@ export function arraysEqual(a: readonly string[], b: readonly string[]): boolean
 	return true;
 }
 
+/**
+ * Put ids back where they used to be.
+ *
+ * Used for cards the grid must keep drawing although they have left the list it normally works
+ * from - a note somebody else deleted, held as a dimmed tombstone until the user applies the
+ * change. Appending them would move the card, which is the whole thing being prevented, so each one
+ * goes back at the index it held in `previous`.
+ *
+ * Ascending by old index on purpose: each splice then lands before the ones still to come, so two
+ * adjacent re-insertions cannot swap places. An id with no previous position goes last, which is
+ * the only honest answer when there is nothing to restore it to.
+ */
+export function reinsertIdsAtPreviousPositions(
+	next: readonly string[],
+	previous: readonly string[],
+	idsToRestore: Iterable<string>
+): string[] {
+	const present = new Set(next);
+	const missing = [...idsToRestore].filter((id) => id && !present.has(id));
+	if (missing.length === 0) return next as string[];
+	const result = [...next];
+	const byOldIndex = missing
+		.map((id) => ({ id, index: previous.indexOf(id) }))
+		.sort((left, right) => left.index - right.index);
+	for (const entry of byOldIndex) {
+		const at = entry.index < 0 ? result.length : Math.min(entry.index, result.length);
+		result.splice(at, 0, entry.id);
+	}
+	return result;
+}
+
 export function mergeVisibleIdsIntoLayoutOrder(previous: readonly string[], visibleIds: readonly string[]): string[] {
 	const visibleSet = new Set(visibleIds);
 	const kept = previous.filter((id) => visibleSet.has(id));

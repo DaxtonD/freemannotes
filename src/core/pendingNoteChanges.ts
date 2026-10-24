@@ -704,6 +704,41 @@ export function resolveOwnPendingAdd(
 	return next;
 }
 
+/**
+ * Drop a held note that has turned out to be in the trash.
+ *
+ * ## The case
+ *
+ * Meshuga shares a note. Daxton accepts it on his desktop, so his phone holds it behind the chip -
+ * correct, that is the announcement the other device is supposed to get. Then Meshuga trashes the
+ * note. The phone keeps the chip, and pressing it shows the note and then immediately hides it
+ * again: the grid moves twice and tells the user nothing.
+ *
+ * `foldChange` already handles the equivalent case when both halves arrive as list changes - added
+ * then removed cancels out, because a note that came and went unseen is not news in either
+ * direction. This is the same rule reaching the same conclusion from a different signal, because a
+ * trashing never touches the note list at all, and on a device meeting the note for the first time
+ * the `trashed` flag is simply already true when the document loads. There is no transition to
+ * observe, so somebody has to look.
+ *
+ * ## Only a held ADD
+ *
+ * A tombstone is left alone - it is *about* the note being gone, so the note being gone is not a
+ * reason to discard it. An edited card is left alone too: it is already on the grid, and if it is
+ * trashed the grid's own filters deal with it.
+ */
+export function dropObsoleteWithheldNote(
+	state: PendingNoteChangeState,
+	noteId: string
+): PendingNoteChangeState {
+	if (!noteId) return state;
+	const existing = state.get(noteId);
+	if (!existing || existing.kind !== 'added') return state;
+	const next = new Map(state);
+	next.delete(noteId);
+	return next;
+}
+
 /** Flush: everything has been applied, so nothing is pending. */
 export function clearPendingNoteChanges(state: PendingNoteChangeState): PendingNoteChangeState {
 	return state.size === 0 ? state : new Map();

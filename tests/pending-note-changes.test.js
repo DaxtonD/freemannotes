@@ -28,6 +28,7 @@ const {
 	clearPendingNoteChanges,
 	createEmptyPendingNoteChanges,
 	diffNoteIds,
+	dropObsoleteWithheldNote,
 	pendingAddedNoteIds,
 	pendingCardNoteChanges,
 	pendingEditedNoteChanges,
@@ -1000,6 +1001,44 @@ describe('the note itself says who made it', () => {
 		const snapshot = [...original.entries()];
 		resolve(original, 'mine', ME);
 		assert.deepEqual([...original.entries()], snapshot);
+	});
+});
+
+describe('a held note that has since been trashed is obsolete', () => {
+	// Reported from testing: Meshuga shared a note, Daxton accepted it on his desktop so his phone
+	// held it behind the chip, and then Meshuga trashed it. The phone kept offering the note;
+	// applying it showed the card and then hid it again - the grid moving twice to say nothing.
+	//
+	// foldChange already reaches this conclusion when both halves arrive as list changes. A
+	// trashing never touches the note list, and a device meeting the note for the first time finds
+	// the flag ALREADY true, so there is no transition for anything to observe.
+	it('drops a held add', () => {
+		const state = dropObsoleteWithheldNote(listDiff(empty(), ['shared'], [], ALICE, 1000), 'shared');
+		assert.equal(state.size, 0);
+	});
+
+	it('leaves a tombstone alone', () => {
+		// It is ABOUT the note being gone, so the note being gone is not a reason to discard it.
+		const state = listDiff(empty(), [], ['gone'], ALICE, 1000);
+		assert.equal(dropObsoleteWithheldNote(state, 'gone').size, 1);
+	});
+
+	it('leaves an edited card alone', () => {
+		// Already on the grid; the grid's own filters deal with it being trashed.
+		const state = edited(empty(), 'note-1', ALICE, 1000);
+		assert.equal(dropObsoleteWithheldNote(state, 'note-1').size, 1);
+	});
+
+	it('returns the same object when there is nothing to drop', () => {
+		const state = edited(empty(), 'note-1', ALICE);
+		assert.equal(dropObsoleteWithheldNote(state, 'absent'), state);
+	});
+
+	it('leaves the chip counting nothing once the only held note goes', () => {
+		let state = listDiff(empty(), ['shared'], [], ALICE, 1000);
+		assert.equal(summarisePendingNoteChanges(state).structural, 1);
+		state = dropObsoleteWithheldNote(state, 'shared');
+		assert.equal(summarisePendingNoteChanges(state).structural, 0);
 	});
 });
 
