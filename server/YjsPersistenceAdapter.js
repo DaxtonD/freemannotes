@@ -271,6 +271,19 @@ class YjsPersistenceAdapter {
 		this._lastPersistedStateVector = new Map();
 
 		/**
+		 * How each room's bindState went: { startedAt, source, bytes, error }.
+		 *
+		 * Exists so the empty-document guard in _persistDoc can say whether a doc was emptied
+		 * AFTER loading or never loaded at all. Those are different bugs with no overlap in where
+		 * you would look, and the refusal could not previously tell them apart.
+		 * @type {Map<string, { startedAt: number, source: string, bytes: number, error: string|null }>}
+		 */
+		this._bindOutcome = new Map();
+
+		/** Empty writes refused per room, so a loop reads as a loop rather than a one-off. */
+		this._emptyRefusalCounts = new Map();
+
+		/**
 		 * Last known actor (userId) per room. Set by recordDocUpdate() when a WS
 		 * client sends an update. Used to attribute mention activities to the correct
 		 * user. Best-effort: in multi-user sessions this will be the last writer.
@@ -351,6 +364,17 @@ class YjsPersistenceAdapter {
 		// Track the active doc for debounced writes.
 		this._activeDocs.set(docName, yDoc);
 
+		/**
+		 * How this room's load went, kept for the empty-document guard further down.
+		 *
+		 * If that guard ever fires, the only question worth answering is whether the document was
+		 * emptied AFTER loading or never loaded at all - completely different bugs, and there is a
+		 * live path to the second one a few lines below, where a failed PostgreSQL read
+		 * deliberately does not throw and leaves the doc empty. Without this the refusal can say
+		 * what it stopped but not what caused it.
+		 */
+		this._bindOutcome.set(docName, { startedAt: Date.now(), source: 'pending', bytes: 0, error: null });
+
 		// ── Attempt Redis cache load first (fast path) ───────────────────────
 		logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'bind-start' });
 
@@ -364,6 +388,7 @@ class YjsPersistenceAdapter {
 				if (cached && cached.length > 0) {
 					Y.applyUpdate(yDoc, new Uint8Array(cached));
 					loaded = true;
+					this._bindOutcome.set(docName, { startedAt: Date.now(), source: 'redis', bytes: cached.length, error: null });
 					logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'redis-cache-hit', bytes: cached.length });
 					console.info(`[persist] loaded from Redis cache: room=${docName}`);
 				}
@@ -434,6 +459,7 @@ class YjsPersistenceAdapter {
 						this._lastPersistedStateVector.set(docName, Buffer.from(row.stateVector));
 					}
 					loaded = true;
+					this._bindOutcome.set(docName, { startedAt: Date.now(), source: 'postgres', bytes: row.state.length, error: null });
 					logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'db-read', bytes: row.state.length });
 					console.info(`[persist] loaded from PostgreSQL: room=${docName} bytes=${row.state.length}`);
 
@@ -445,10 +471,28 @@ class YjsPersistenceAdapter {
 			} catch (err) {
 				console.error(`[persist] PostgreSQL read failed for room=${docName}:`, err.message);
 				// Do not throw — let the doc start empty and sync from clients.
+				//
+				// Worth being honest about what this means: the in-memory doc is now EMPTY while
+				// real content sits in the database. That is precisely the state the empty-document
+				// guard in _persistDoc exists to stop being written back, so the outcome is
+				// recorded for it to report.
+				this._bindOutcome.set(docName, {
+					startedAt: Date.now(),
+					source: 'read-failed',
+					bytes: 0,
+					error: err && err.message ? String(err.message).slice(0, 200) : 'unknown',
+				});
 			}
 		}
 
 		if (!loaded) {
+			const outcome = this._bindOutcome.get(docName);
+			// Only downgrade to 'empty' if nothing already explained the miss. A read that FAILED
+			// is a different story from a room that genuinely had nothing stored, and conflating
+			// them would throw away the more interesting of the two.
+			if (!outcome || outcome.source === 'pending') {
+				this._bindOutcome.set(docName, { startedAt: Date.now(), source: 'empty', bytes: 0, error: null });
+			}
 			logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'hydrate-miss' });
 			console.info(`[persist] no stored state for room=${docName} workspaceId=${workspaceId} — starting fresh`);
 		}
@@ -501,6 +545,7 @@ class YjsPersistenceAdapter {
 		if (isMarkupRoomName(docName)) {
 			this._activeDocs.delete(docName);
 			this._lastPersistedStateVector.delete(docName);
+			this._bindOutcome.delete(docName);
 			this._docActors.delete(docName);
 			if (this._markupLoadFailed) this._markupLoadFailed.delete(docName);
 			return;
@@ -528,6 +573,7 @@ class YjsPersistenceAdapter {
 		this._activeDocs.delete(docName);
 		this._docWorkspaceId.delete(docName);
 		this._lastPersistedStateVector.delete(docName);
+		this._bindOutcome.delete(docName);
 	}
 
 	/**
@@ -699,19 +745,41 @@ class YjsPersistenceAdapter {
 				.catch(() => null);
 			const storedBytes = existing && existing.state ? existing.state.length : 0;
 			if (storedBytes > EMPTY_DOC_STATE_MAX_BYTES) {
+				const bind = this._bindOutcome.get(docName) || null;
+				const refusals = (this._emptyRefusalCounts.get(docName) || 0) + 1;
+				this._emptyRefusalCounts.set(docName, refusals);
+				const diagnosis = !bind
+					? 'NEVER BOUND — this doc was never loaded by this adapter, so something is persisting a document it never hydrated'
+					: bind.source === 'read-failed'
+						? `LOAD FAILED (${bind.error}) — the doc started empty because the database read threw; this is the most likely cause`
+						: bind.source === 'empty'
+							? 'LOADED EMPTY — bindState found no stored state, yet the row has content now, so the row was written between bind and here'
+							: `LOADED OK from ${bind.source} (${bind.bytes} bytes) — the doc HAD content and lost it afterwards; look at what clears root types`;
 				// Loud on purpose. This is the trap that turns an unreproducible mystery into a
-				// caught event: it names the room and the moment, so the NEXT occurrence tells us
-				// what empties the doc instead of silently destroying the evidence.
+				// caught event — and the line below is the whole point of it: it says whether the
+				// document was emptied AFTER loading or never loaded at all, which are completely
+				// different bugs with no overlap in where you would look.
 				console.error(
 					`[persist] REFUSED to overwrite ${storedBytes} stored bytes with an EMPTY document`
-					+ ` — room=${docName}. Stored content preserved. This indicates the in-memory doc`
-					+ ` was empty when it should not have been; please report with the surrounding log.`
+					+ ` — room=${docName}`
+					+ `\n  diagnosis   : ${diagnosis}`
+					+ `\n  bind        : ${bind ? `${bind.source} ${bind.bytes}B, ${Date.now() - bind.startedAt}ms ago` : 'no record'}`
+					+ `\n  connections : ${yDoc && yDoc.conns ? yDoc.conns.size : 'unknown'}`
+					+ `\n  clientID    : ${yDoc ? yDoc.clientID : 'unknown'}`
+					+ `\n  refusals    : ${refusals} for this room`
+					+ `\n  Stored content preserved. Please report this whole block.`
 				);
 				logEvent('YJS_PERSIST_REFUSED_EMPTY', {
 					...getRoomDebugContext(docName),
 					event: 'refused-empty-overwrite',
 					storedBytes,
 					incomingBytes: state.length,
+					bindSource: bind ? bind.source : 'none',
+					bindBytes: bind ? bind.bytes : 0,
+					bindError: bind ? bind.error : null,
+					msSinceBind: bind ? Date.now() - bind.startedAt : null,
+					connections: yDoc && yDoc.conns ? yDoc.conns.size : null,
+					refusals,
 				});
 				return;
 			}

@@ -130,3 +130,98 @@ describe('_persistDoc empty-document guard', () => {
 		assert.equal(prisma.calls.upserts.length, 1, 'cannot prove content exists, so it proceeds');
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What the refusal TELLS you.
+//
+// Preserving the data is only half the guard's job. The other half is saying
+// WHICH bug this is, because "emptied after loading" and "never loaded" have no
+// overlap in where you would look:
+//
+//   loaded then emptied -> something clears root types after bindState
+//   load failed         -> bindState's catch deliberately does not throw, so a
+//                          transient DB error leaves the doc empty on purpose
+//   never bound         -> something is persisting a doc this adapter never
+//                          hydrated
+//
+// The original incident destroyed its own evidence. These assertions are what
+// stop the next one doing the same.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Capture console.error while running fn. */
+async function captureError(fn) {
+	const lines = [];
+	const original = console.error;
+	console.error = (...args) => { lines.push(args.join(' ')); };
+	try {
+		await fn();
+	} finally {
+		console.error = original;
+	}
+	return lines.join('\n');
+}
+
+describe('the refusal explains itself', () => {
+	it('says the doc LOADED OK and lost its content afterwards', async () => {
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		adapter._bindOutcome.set(ROOM, { startedAt: Date.now(), source: 'postgres', bytes: 4096, error: null });
+		const output = await captureError(() => adapter._persistDoc(ROOM, emptyDoc()));
+		assert.match(output, /LOADED OK from postgres/);
+		assert.match(output, /lost it afterwards/);
+		assert.equal(prisma.calls.upserts.length, 0, 'and still refuses the write');
+	});
+
+	it('names a failed database read as the likely cause, with its message', async () => {
+		// The path that actually exists: bindState catches a read error and lets the doc start
+		// empty. If that is what happened, the refusal should say so rather than leaving it to be
+		// rediscovered from first principles.
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		adapter._bindOutcome.set(ROOM, {
+			startedAt: Date.now(), source: 'read-failed', bytes: 0, error: 'connection terminated',
+		});
+		const output = await captureError(() => adapter._persistDoc(ROOM, emptyDoc()));
+		assert.match(output, /LOAD FAILED/);
+		assert.match(output, /connection terminated/);
+		assert.match(output, /most likely cause/);
+	});
+
+	it('flags a doc that was never bound at all', async () => {
+		const prisma = fakePrisma(4096);
+		const output = await captureError(() => adapterFor(prisma)._persistDoc(ROOM, emptyDoc()));
+		assert.match(output, /NEVER BOUND/);
+	});
+
+	it('distinguishes "bindState found nothing" from "the read failed"', async () => {
+		// Conflating them would throw away the more interesting of the two.
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		adapter._bindOutcome.set(ROOM, { startedAt: Date.now(), source: 'empty', bytes: 0, error: null });
+		const output = await captureError(() => adapter._persistDoc(ROOM, emptyDoc()));
+		assert.match(output, /LOADED EMPTY/);
+		assert.doesNotMatch(output, /LOAD FAILED/);
+	});
+
+	it('counts repeats, so a loop reads as a loop', async () => {
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		await captureError(() => adapter._persistDoc(ROOM, emptyDoc()));
+		const second = await captureError(() => adapter._persistDoc(ROOM, emptyDoc()));
+		assert.match(second, /refusals\s+:\s*2 for this room/);
+	});
+
+	it('always names the room and the stored byte count', async () => {
+		const prisma = fakePrisma(4096);
+		const output = await captureError(() => adapterFor(prisma)._persistDoc(ROOM, emptyDoc()));
+		assert.ok(output.includes(ROOM), 'names the room');
+		assert.match(output, /4096 stored bytes/);
+	});
+
+	it('says nothing at all on the normal path', async () => {
+		// The guard must stay invisible for the writes that are fine, which is all of them.
+		const prisma = fakePrisma(4096);
+		const output = await captureError(() => adapterFor(prisma)._persistDoc(ROOM, docWithContent('hello')));
+		assert.equal(output, '');
+	});
+});
