@@ -134,8 +134,7 @@ const NOTE_CHANGE_DEBOUNCE_MS = 10000;
  * minute is the most anyone should wait to hear that a note is being worked on.
  */
 const NOTE_CHANGE_MAX_WAIT_MS = 60_000;
-/** Membership rarely changes and this runs per burst, so a short cache is plenty. */
-const MEMBER_CACHE_TTL_MS = 30_000;
+const { createNoteRecipientResolver, MEMBER_CACHE_TTL_MS } = require('./noteRecipients');
 
 const NOTES_REGISTRY_SUFFIX = '__notes_registry__';
 
@@ -183,52 +182,13 @@ function createNoteChangeNotifier(options = {}) {
 	 * oldest-first exactly when edits arrive fastest. A counter is ordered by construction.
 	 */
 	let actorSequence = 0;
-	/** workspaceId -> { userIds, expiresAt } */
-	const memberCache = new Map();
-	/** docName -> { userIds, expiresAt } */
-	const collaboratorCache = new Map();
-
-	async function readWorkspaceMemberIds(workspaceId) {
-		const cached = memberCache.get(workspaceId);
-		if (cached && cached.expiresAt > Date.now()) return cached.userIds;
-		if (!prisma) return null;
-		try {
-			const rows = await prisma.workspaceMember.findMany({
-				where: { workspaceId },
-				select: { userId: true },
-			});
-			const userIds = rows.map((row) => String(row.userId)).filter(Boolean);
-			memberCache.set(workspaceId, { userIds, expiresAt: Date.now() + MEMBER_CACHE_TTL_MS });
-			return userIds;
-		} catch {
-			// Fail closed - see the note on recipients above.
-			return null;
-		}
-	}
-
 	/**
-	 * Active collaborators on one note. Returns [] when there are none, and null only when the
-	 * lookup FAILED - the caller treats those differently, because "nobody extra" and "we do not
-	 * know" must not collapse into the same answer.
+	 * These rules now live in noteRecipients.js, because the media router needed the same ones and
+	 * did not have them - every image, document, link preview and OCR tick was published with no
+	 * recipient list at all, which the broadcaster reads as "send to everyone". Two copies of a
+	 * fail-closed rule drift, and that drift IS the bug, so there is one copy.
 	 */
-	async function readNoteCollaboratorIds(docName) {
-		const cached = collaboratorCache.get(docName);
-		if (cached && cached.expiresAt > Date.now()) return cached.userIds;
-		if (!prisma) return [];
-		try {
-			const rows = await prisma.noteCollaborator.findMany({
-				// revokedAt is how access is taken away; the row stays. Omitting this would keep
-				// telling an ex-collaborator about a note they can no longer open.
-				where: { docId: docName, revokedAt: null },
-				select: { userId: true },
-			});
-			const userIds = rows.map((row) => String(row.userId)).filter(Boolean);
-			collaboratorCache.set(docName, { userIds, expiresAt: Date.now() + MEMBER_CACHE_TTL_MS });
-			return userIds;
-		} catch {
-			return null;
-		}
-	}
+	const recipients = createNoteRecipientResolver({ prisma, ttlMs: MEMBER_CACHE_TTL_MS });
 
 	async function flush(docName) {
 		const entry = pending.get(docName);
@@ -238,19 +198,17 @@ function createNoteChangeNotifier(options = {}) {
 		if (entry.maxTimer) clearTimeout(entry.maxTimer);
 		if (!emit) return;
 
-		const memberIds = await readWorkspaceMemberIds(entry.workspaceId);
 		// A failed lookup is not an empty one. No recipient list means no event, because an empty
 		// userIds field broadcasts to every connected client and would leak the note id.
-		if (!memberIds) return;
-
-		const recipients = new Set(memberIds);
-		if (entry.reason === 'note-changed') {
-			const collaboratorIds = await readNoteCollaboratorIds(docName);
-			if (!collaboratorIds) return;
-			for (const userId of collaboratorIds) recipients.add(userId);
-		}
-		if (recipients.size === 0) return;
-		const userIds = [...recipients];
+		//
+		// The registry is not a note and has no collaborators of its own, so only a note-changed
+		// event asks for them.
+		const userIds = await recipients.resolveRecipients({
+			workspaceId: entry.workspaceId,
+			docId: docName,
+			includeCollaborators: entry.reason === 'note-changed',
+		});
+		if (!userIds) return;
 
 		// Most recent first, which is the order the card's chips are drawn in.
 		const changedUserIds = [...entry.actors.entries()]
@@ -323,8 +281,7 @@ function createNoteChangeNotifier(options = {}) {
 			if (entry.maxTimer) clearTimeout(entry.maxTimer);
 		}
 		pending.clear();
-		memberCache.clear();
-		collaboratorCache.clear();
+		recipients.clear();
 	}
 
 	return {
