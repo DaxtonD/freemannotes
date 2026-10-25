@@ -86,6 +86,7 @@ import type { NoteDocumentRecord } from './core/noteDocumentApi';
 import { getNoteDocumentExtension, resolveNoteDocumentBlob } from './core/noteDocumentStore';
 import { getDocumentConversionEnabled } from './core/instanceConfig';
 import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
+import { ConfirmModal } from './components/shared/ConfirmModal';
 import { CollectionManagementModal } from './components/Workspaces/CollectionManagementModal';
 import { NoteCollectionModal } from './components/Workspaces/NoteCollectionModal';
 import { NoteLabelsModal } from './components/Workspaces/NoteLabelsModal';
@@ -148,9 +149,10 @@ import {
 	queuePlacementMetadataAction,
 	readCachedNoteShareCollaborators,
 	readPendingCollaboratorActions,
+	getNoteShareCollaborators,
 	revokeNoteShareCollaborator,
-	syncAttachedDrawingCollaborators,
 	syncNoteShareCollaborators,
+	syncAttachedDrawingCollaborators,
 	type NoteShareCollaboratorSnapshot,
 	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
@@ -1022,6 +1024,7 @@ function isMobileDismissLayerHistoryState(value: unknown): boolean {
 	if (state.__collectionManagementModal === true) return true;
 	if (state.__noteColorPicker === true) return true;
 	if (state.__noteBannerPicker === true) return true;
+	if (state.__confirmModal === true) return true;
 	const chipOverlay = state.__chipOverlay;
 	return chipOverlay === 'collaborator' || chipOverlay === 'attachments';
 }
@@ -1287,6 +1290,14 @@ const STARTUP_STALL_NOTICE_MS = 12000;
  * the device you accepted it on, which is the exact symptom this exists to fix.
  */
 const USER_INITIATED_PLACEMENT_WINDOW_MS = 30000;
+/**
+ * How many collaborators the end-of-collaboration dialog names before it starts counting.
+ *
+ * Same three-then-"+N more" shape as the change chips, for the same reason: enough to recognise
+ * who is affected, not so many that the sentence stops being readable. The dialog's body scrolls,
+ * so this is about legibility rather than overflow.
+ */
+const MAX_TRASH_DIALOG_NAMES = 3;
 /**
  * Quiet period on the note list before the pending set starts judging changes.
  *
@@ -7548,6 +7559,23 @@ export function App(): React.JSX.Element {
 	}, [authUserId]);
 
 	/**
+	 * A note came back out of the trash, so nothing marked on it is news any more.
+	 *
+	 * Reported: a note carrying two collaborators' edit chips was trashed - which ended the
+	 * collaboration - and restored, and the chips came back naming two people who no longer had
+	 * access to it. Trashing already clears the entry (see onDeleteSelectedNote), so this is the
+	 * backstop that also covers notes trashed before that existed, a remote restore, and the
+	 * bubble-view modal's direct `setNoteTrashed` call.
+	 */
+	const handleNoteRestored = React.useCallback((noteId: string) => {
+		setPendingNoteChanges((state) => {
+			const next = resolveNoteChange(state, noteId);
+			if (next !== state) recordPendingChangeTrace('cleared-by-restore', { note: noteId.slice(0, 8) });
+			return next;
+		});
+	}, []);
+
+	/**
 	 * Somebody else added or removed an attachment - an image, a document, or a link preview.
 	 *
 	 * This is the gap he found by observation: adding a link or a drawing darkened the card for
@@ -11189,6 +11217,24 @@ export function App(): React.JSX.Element {
 		[canEditActiveWorkspace, closeCreateEditor, manager, showBriefDialog, t]
 	);
 
+	/**
+	 * A trash that is waiting on the owner saying yes, because it will end a collaboration.
+	 *
+	 * Held as state rather than resolved inline so the dialog renders from App's top level and is
+	 * never a child of the more-menu - no orphaned `__moreMenu` history entry to consume, and
+	 * none of the `closeForChildOverlay` complications that nesting brings.
+	 */
+	const [pendingSharedTrash, setPendingSharedTrash] = React.useState<
+		{ noteId: string; docId: string; collaboratorIds: string[]; names: string[] } | null
+	>(null);
+	const [sharedTrashBusy, setSharedTrashBusy] = React.useState(false);
+	// Read at call time: the confirm handler is created once and must not close over a stale
+	// pending trash, a stale busy flag, or an older copy of onDeleteSelectedNote.
+	const pendingSharedTrashRef = React.useRef(pendingSharedTrash);
+	pendingSharedTrashRef.current = pendingSharedTrash;
+	const sharedTrashBusyRef = React.useRef(sharedTrashBusy);
+	sharedTrashBusyRef.current = sharedTrashBusy;
+
 	const onDeleteSelectedNote = React.useCallback(
 		async (noteId: string) => {
 			const placement = sharedPlacements.find((item) => item.aliasId === noteId);
@@ -11207,6 +11253,42 @@ export function App(): React.JSX.Element {
 				leaveSharedNoteFromMenu(noteId, placement.roomId);
 				return;
 			}
+			/**
+			 * Trashing a note you have SHARED ends the collaboration, so ask first.
+			 *
+			 * Reversible for you, final for them - that asymmetry is the whole reason this needs
+			 * approval rather than just happening. A failed lookup does not block the trash: this
+			 * is a courtesy gate, and a note you cannot delete because the network hiccuped would
+			 * be a worse bug than a share revoked without the warning.
+			 */
+			const docIdForShares = manager.resolveRoomName(noteId);
+			const directCollaborators = await getNoteShareCollaborators(docIdForShares)
+				.then((snapshot) => (snapshot.collaborators || []).filter((entry) => (
+					// Workspace-derived access is not a share and has nothing to revoke.
+					entry.accessSource !== 'workspace' && !entry.revokedAt
+				)))
+				.catch(() => []);
+			if (directCollaborators.length > 0) {
+				setPendingSharedTrash({
+					noteId,
+					docId: docIdForShares,
+					collaboratorIds: directCollaborators.map((entry) => entry.id),
+					names: directCollaborators
+						.map((entry) => (entry.user?.name || entry.user?.email || '').trim())
+						.filter(Boolean),
+				});
+				return;
+			}
+
+			/**
+			 * Trashing is attention paid, so whatever was marked on this note stops being news.
+			 *
+			 * Exactly the reasoning that already applies to opening one - you have made a decision
+			 * about this note. Doing it here rather than only on restore also keeps a stale entry
+			 * out of localStorage for however long the note sits in the trash.
+			 */
+			setPendingNoteChanges((state) => resolveNoteChange(state, noteId));
+
 			// Soft-delete: mark as trashed in the Yjs metadata. The note stays
 			// in the registry and order arrays but is hidden from the main grid.
 			// Server-side cleanup permanently removes it after deleteAfterDays.
@@ -11227,6 +11309,90 @@ export function App(): React.JSX.Element {
 		},
 		[authWorkspaceId, canEditActiveWorkspace, closeNoteEditor, leaveSharedNoteFromMenu, manager, persistNoteReminderState, sharedPlacements, showBriefDialog, t]
 	);
+	const onDeleteSelectedNoteRef = React.useRef(onDeleteSelectedNote);
+	onDeleteSelectedNoteRef.current = onDeleteSelectedNote;
+
+	/**
+	 * The owner said yes: end the collaboration, then trash the note.
+	 *
+	 * Revoking FIRST is the important half. The other order leaves a trashed note with live
+	 * collaborators attached - invisible to everyone, and the exact opposite of the intent being
+	 * expressed. If a revoke fails the whole thing stops and says so: a partial revoke is at least
+	 * visible and fixable, whereas a trashed note somebody else can still open is neither.
+	 *
+	 * The trash itself goes back through `onDeleteSelectedNote` rather than being repeated here.
+	 * By then the shares are gone, so it takes the ordinary path - and the reminder cleanup and
+	 * editor-close tail stay in one place instead of being copied into a second trash route that
+	 * would drift. Two near-identical paths doing almost the same thing is a documented way to
+	 * lose an afternoon in this codebase.
+	 */
+	const confirmSharedTrash = React.useCallback(async () => {
+		const pending = pendingSharedTrashRef.current;
+		if (!pending || sharedTrashBusyRef.current) return;
+		setSharedTrashBusy(true);
+		try {
+			for (const collaboratorId of pending.collaboratorIds) {
+				await revokeNoteShareCollaborator(collaboratorId);
+			}
+		} catch {
+			setSharedTrashBusy(false);
+			showBriefDialog(t('share.trashRevokeFailed'));
+			return;
+		}
+		/**
+		 * Refresh THIS device's own idea of who can see the note.
+		 *
+		 * Revoking on the server does not tell the client anything. The collaborator chip and the
+		 * collaborator modal both read a cached snapshot, so without this the owner's own note went
+		 * on listing people who no longer had access - reported after restoring from trash, where
+		 * the card came back still naming its ex-collaborator.
+		 *
+		 * Best-effort on purpose: the access IS gone, and failing to refresh a cache must not make
+		 * it look as though the revoke failed. The next visible-notes sync corrects it anyway.
+		 */
+		if (authUserId) {
+			await syncNoteShareCollaborators(authUserId, pending.docId, { suppressError: true })
+				.catch(() => undefined);
+		}
+		setPendingSharedTrash(null);
+		setSharedTrashBusy(false);
+		await onDeleteSelectedNoteRef.current(pending.noteId);
+	}, [authUserId, showBriefDialog, t]);
+
+	/**
+	 * "Meshuga, Claude and 4 others will lose access to this note immediately."
+	 *
+	 * Named up to three and counted after that, which is the same shape the change chips use - a
+	 * dialog that lists twenty names comma-separated is unreadable, and one that lists none is
+	 * asking the owner to approve something they cannot see. Three is enough to recognise who this
+	 * is about.
+	 *
+	 * Falls back to a bare count when no names resolved at all: a collaborator whose profile has
+	 * not loaded is still losing access, and saying nothing about them would be worse than saying
+	 * "4 collaborators".
+	 */
+	const sharedTrashWhoLine = React.useMemo(() => {
+		const total = pendingSharedTrash?.collaboratorIds.length ?? 0;
+		const names = pendingSharedTrash?.names ?? [];
+		if (names.length === 0) {
+			return t('share.trashSharedWhoCount').replace('{count}', String(total));
+		}
+		const shown = names.slice(0, MAX_TRASH_DIALOG_NAMES);
+		// The overflow counts everybody not named, including collaborators whose name never
+		// resolved - otherwise the sentence would quietly under-report how many people it affects.
+		const remaining = total - shown.length;
+		const who = remaining > 0
+			? t('share.trashSharedWhoOverflow')
+				.replace('{names}', shown.join(', '))
+				.replace('{count}', String(remaining))
+			: shown.join(', ');
+		return t('share.trashSharedWho').replace('{names}', who);
+	}, [pendingSharedTrash, t]);
+
+	const cancelSharedTrash = React.useCallback(() => {
+		if (sharedTrashBusyRef.current) return;
+		setPendingSharedTrash(null);
+	}, []);
 
 	const closeMoveNoteModal = React.useCallback(() => {
 		if (moveNoteBusy) return;
@@ -13958,6 +14124,7 @@ export function App(): React.JSX.Element {
 						heldRemovedNoteIds={heldRemovedNoteIds}
 						onNoteTrashedRemotely={handleNoteTrashedRemotely}
 						onWithheldNoteResolved={handleWithheldNoteResolved}
+						onNoteRestored={handleNoteRestored}
 						pendingCardChanges={pendingCardChanges}
 						onAllDocsLoaded={() => {
 							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
@@ -14772,6 +14939,22 @@ export function App(): React.JSX.Element {
 				onSave={(value) => {
 					void handleCreateQuickReminder(value);
 				}}
+			/>
+
+			{/* Rendered here, at the top level, rather than from the menu that triggers it - so it
+			    is never a child overlay and there is no orphaned __moreMenu entry to consume. */}
+			<ConfirmModal
+				open={Boolean(pendingSharedTrash)}
+				title={t('share.trashSharedTitle')}
+				body={[
+					sharedTrashWhoLine,
+					t('share.trashSharedConsequence'),
+				]}
+				confirmLabel={t('share.trashSharedConfirm')}
+				cancelLabel={t('common.cancel')}
+				busy={sharedTrashBusy}
+				onConfirm={() => void confirmSharedTrash()}
+				onCancel={cancelSharedTrash}
 			/>
 
 			<MoveNoteModal

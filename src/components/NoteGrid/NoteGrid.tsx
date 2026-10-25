@@ -313,6 +313,14 @@ export type NoteGridProps = {
 	 * from sitting there as a promise the grid cannot keep.
 	 */
 	onWithheldNoteResolved?: (noteId: string, info: { authorUserId: string | null; trashed: boolean }) => void;
+	/**
+	 * A note came back OUT of the trash.
+	 *
+	 * Reported from here rather than from the restore buttons because there are five of those plus
+	 * a direct `setNoteTrashed` call in the bubble-view modal. Keying off the note's own data means
+	 * none of them has to remember.
+	 */
+	onNoteRestored?: (noteId: string) => void;
 	/** Fires whenever pendingNoteWsSync changes value. */
 	/**
 	 * Fires whenever the number of note rooms still awaiting their first WS sync changes.
@@ -1688,6 +1696,8 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 	onNoteTrashedRemotelyRef.current = props.onNoteTrashedRemotely;
 	const onWithheldNoteResolvedRef = React.useRef(props.onWithheldNoteResolved);
 	onWithheldNoteResolvedRef.current = props.onWithheldNoteResolved;
+	const onNoteRestoredRef = React.useRef(props.onNoteRestored);
+	onNoteRestoredRef.current = props.onNoteRestored;
 	// Read at call time by publishViewportRooms, which runs from observer callbacks and must keep
 	// a stable identity.
 	const withheldNoteIdsRef = React.useRef(props.withheldNoteIds);
@@ -2528,6 +2538,20 @@ const RECENT_CONNECTION_SEED_COUNT = 5;
 				 * the key changing are different events and only one of them is news.
 				 */
 				const trashedChange = event.changes.keys.get('trashed');
+				/**
+				 * Coming back OUT of the trash. Same discriminator as going in, and for the same
+				 * reason: on a cold load `trashed` arrives as action 'add' with value false, which
+				 * is indistinguishable from a restore by value alone. Treating that as a restore
+				 * would clear every legitimate edit chip on startup.
+				 */
+				if (
+					trashedChange
+					&& trashedChange.action === 'update'
+					&& trashedChange.oldValue === true
+					&& metadata.get('trashed') !== true
+				) {
+					onNoteRestoredRef.current?.(noteId);
+				}
 				if (
 					trashedChange
 					&& trashedChange.action === 'update'

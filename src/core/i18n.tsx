@@ -1187,6 +1187,13 @@ const FALLBACK_MESSAGES: Dictionary = {
 		contributorsEmpty: 'Be the first to support Freeman Notes!',
 	},
 	share: {
+		trashSharedTitle: 'Trashing this note ends the collaboration',
+		trashSharedWho: '{names} will lose access to this note immediately.',
+		trashSharedWhoOverflow: '{names} and {count} others',
+		trashSharedWhoCount: '{count} collaborator(s) will lose access to this note immediately.',
+		trashSharedConsequence: 'You can restore it from your trash, but they will not get it back \u2014 you would need to invite them again.',
+		trashSharedConfirm: 'Trash and remove access',
+		trashRevokeFailed: 'Could not remove access, so the note was left alone. Please try again.',
 		share: 'Share',
 		title: 'Share note',
 		collaborators: 'Collaborators',

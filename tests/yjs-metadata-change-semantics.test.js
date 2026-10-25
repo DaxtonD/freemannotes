@@ -187,3 +187,89 @@ describe('the rule NoteGrid uses', () => {
 		assert.equal(firings.length, 1);
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Coming back OUT of the trash.
+//
+// A note carrying two collaborators' edit chips was trashed - which ended the
+// collaboration - and restored, and the chips came back naming two people who
+// no longer had access. So a restore has to clear whatever was marked on the
+// note, and it is detected from the note's own data because `restoreNote` has
+// five call sites and `setNoteTrashed` is also called directly elsewhere.
+//
+// It is the SAME trap as the trashing rule, and it would have bitten
+// identically: on a cold load `trashed` arrives as action 'add' with value
+// false, which by value alone is indistinguishable from a restore. Treating
+// that as a restore would clear every legitimate edit chip on startup - the
+// mirror image of the bug that invented tombstones out of cold loads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The rule NoteGrid uses to spot a note leaving the trash. */
+const isRemoteRestore = (seen) => seen.some((entry) => (
+	entry.action === 'update' && entry.oldValue === true && entry.newValue !== true
+));
+
+describe('spotting a restore', () => {
+	it('fires when a trashed note is restored', () => {
+		const timeline = ownerTimeline();
+		const doc = new Y.Doc();
+		Y.applyUpdate(doc, timeline.trashed);
+		const seen = watchTrashed(doc);
+		Y.applyUpdate(doc, timeline.restored);
+		assert.equal(isRemoteRestore(seen), true);
+	});
+
+	it('does NOT fire on a cold load of an untrashed note', () => {
+		// The trap. `trashed: false` arriving as the key appears is a load, not a restore - and
+		// clearing on it would wipe every edit chip the moment the app started.
+		const timeline = ownerTimeline();
+		const doc = new Y.Doc();
+		const seen = watchTrashed(doc);
+		Y.applyUpdate(doc, timeline.untrashed);
+		assert.equal(isRemoteRestore(seen), false);
+	});
+
+	it('does NOT fire on a cold load of an already-trashed note', () => {
+		const timeline = ownerTimeline();
+		const doc = new Y.Doc();
+		const seen = watchTrashed(doc);
+		Y.applyUpdate(doc, timeline.trashed);
+		assert.equal(isRemoteRestore(seen), false);
+	});
+
+	it('does NOT fire when a note is trashed', () => {
+		// The two rules must be mutually exclusive, or trashing would both mark the card and
+		// immediately clear it.
+		const timeline = ownerTimeline();
+		const doc = new Y.Doc();
+		Y.applyUpdate(doc, timeline.untrashed);
+		const seen = watchTrashed(doc);
+		Y.applyUpdate(doc, timeline.trashed);
+		assert.equal(isRemoteRestore(seen), false);
+		assert.equal(isRemoteTrashing(seen), true, 'that same event IS a trashing');
+	});
+
+	it('does not fire again when the restored state is re-applied', () => {
+		// Reconnects re-send state the client already has.
+		const timeline = ownerTimeline();
+		const doc = new Y.Doc();
+		Y.applyUpdate(doc, timeline.trashed);
+		Y.applyUpdate(doc, timeline.restored);
+		const seen = watchTrashed(doc);
+		Y.applyUpdate(doc, timeline.restored);
+		assert.equal(isRemoteRestore(seen), false);
+	});
+
+	it('fires once per trash-and-restore cycle', () => {
+		const timeline = ownerTimeline();
+		const doc = new Y.Doc();
+		Y.applyUpdate(doc, timeline.untrashed);
+		const seen = watchTrashed(doc);
+		Y.applyUpdate(doc, timeline.trashed);
+		Y.applyUpdate(doc, timeline.restored);
+		const restores = seen.filter((e) => e.action === 'update' && e.oldValue === true && e.newValue !== true);
+		const trashings = seen.filter((e) => e.action === 'update' && e.oldValue !== true && e.newValue === true);
+		assert.equal(trashings.length, 1);
+		assert.equal(restores.length, 1);
+	});
+});

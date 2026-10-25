@@ -1087,6 +1087,13 @@
     "contributorsEmpty": "¡Sé el primero en apoyar Freeman Notes!"
   },
   "share": {
+    "trashSharedTitle": "Enviar esta nota a la papelera finaliza la colaboraci\u00f3n",
+    "trashSharedWho": "{names} perder\u00e1n el acceso a esta nota de inmediato.",
+    "trashSharedWhoOverflow": "{names} y {count} m\u00e1s",
+    "trashSharedWhoCount": "{count} colaborador(es) perder\u00e1n el acceso a esta nota de inmediato.",
+    "trashSharedConsequence": "Puedes restaurarla desde tu papelera, pero ellos no la recuperar\u00e1n: tendr\u00edas que volver a invitarlos.",
+    "trashSharedConfirm": "Enviar a la papelera y quitar acceso",
+    "trashRevokeFailed": "No se pudo quitar el acceso, as\u00ed que la nota no se modific\u00f3. Int\u00e9ntalo de nuevo.",
     "joinNoteLabel": "Unirse a la nota",
     "fromLabel": "De",
     "sharedAt": "Compartido",
