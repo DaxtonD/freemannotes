@@ -1514,11 +1514,52 @@ access to the note.
   fortnight; that was removed because "somebody changed this and you have not looked" does not stop
   being true on a calendar, and the cap is what actually bounds the store. Do not re-add one
   without a reason that is about size rather than about staleness.
-- **Attachments do not all count as changes yet.** Drawings and link previews do, because they live
-  in the Yjs doc. Images and documents are SQL rows delivered over `/ws/metadata` and
-  `publishNoteMediaMetadataChange` carries no `changedUserId` — and no `userIds` recipient filter
-  either, so those events currently go to every connected metadata client. Adding attribution there
-  is the moment to add the filter.
+- **Attachments all count now, and background work deliberately doesn't.** Drawings and link
+  previews always did, because they live in the Yjs doc and so trip `note-changed` for free. Images
+  and documents are SQL rows and never touch the doc, so they went unnoticed for ages — the
+  treatment was quietly tracking *"did the Yjs document change"*, which is an implementation detail,
+  rather than *"did somebody change this note"*, which is the thing anyone actually cares about.
+  `publishNoteMediaMetadataChange` now carries both a recipient list and an actor.
+
+  **The gate is "does the event name an actor", not a list of reason strings.** The server attaches
+  one only to things a person did, so OCR finishing, a thumbnail being generated and an office file
+  being converted all stay anonymous — nobody did those, and they can land minutes after the upload
+  that caused them. A card reading "Meshuga changed this note" because a queue drained is worse than
+  saying nothing. Keeping the test in the data means a background event added later is silent by
+  default and a new user action is attributed by passing the session, so nobody has to remember to
+  update the client.
+
+- **The actor is recorded ON the note, and that is not a style choice.** `createdByUserId` and
+  `trashedByUserId` (see `noteAuthorFields.ts`) exist because attribution used to arrive only on a
+  `/ws/metadata` event that is debounced 10s and carries *no note ids* — so the client had to match
+  "a note appeared" against "somebody did something" by timing. Three separate bugs came out of
+  that and every attempt to tune the window broke something else. If you need to know who did
+  something, put it on the thing. See PROJECT_PHILOSOPHY.md → "A Hardcoded Time Window Is Usually A
+  Missing Piece Of Data".
+
+- **A Yjs key APPEARING is not a key CHANGING, and this one is genuinely nasty.**
+  `event.keysChanged` plus the current value reads *identically* for a cold load and a live edit, so
+  "is `trashed` true?" was true for every note already in the bin the moment its document loaded.
+  Result: seven already-applied deletions came back as tombstones after a cache clear, demanding a
+  flush for work the user had seen days earlier. Read `event.changes.keys.get(k)` and check
+  `action` (`'add'` vs `'update'`) and `oldValue`. `tests/yjs-metadata-change-semantics.test.js`
+  pins the semantics down precisely so this cannot be "simplified" back.
+
+- **Held note ids stay OUT of the order written to Yjs, and go back INTO the order used for
+  drawing.** Both halves are load-bearing and they pull in opposite directions.
+  `mergeVisibleOrderIntoFullOrder` appends any visible id it cannot place, so a deleted id reaching
+  the commit order writes the dead note back into the shared registry *for everybody* — and that
+  fires on dragging **any** card while a tombstone is on screen, not just the tombstone. But
+  `renderedIds` reads that same committed order straight after a drop, so excluding them from both
+  made the dimmed card vanish the instant a neighbour shifted, which is the one thing it exists to
+  prevent. `reinsertIdsAtPreviousPositions` puts them back where they were; appending would move the
+  card.
+
+- **A note that isn't rendered gets no socket.** The viewport list is built by an
+  IntersectionObserver over *rendered* cards, and a held note is deliberately not one — so nothing
+  that happened to it ever arrived, and a phone went on offering a note whose owner had already
+  binned it. Held ids are therefore published to the viewport list explicitly, appended after the
+  visible cards so the rooms somebody is actually looking at keep the front of the connect queue.
 
 ## Connections Go Where Attention Is, Not Where Documents Are
 

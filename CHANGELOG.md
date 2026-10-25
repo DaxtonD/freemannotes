@@ -2,6 +2,57 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.24.0 - 2026-10-24
+
+The release where cards stop moving around under your hands. This one was a slog, and a fair bit of what follows is us fixing things we broke on the way to fixing the original thing, so settle in.
+
+### Added
+- **Other people's changes wait for you now.** A note somebody else adds doesn't shove your grid around any more — it waits behind a chip until you ask for it. A note somebody else *edits* gets marked instead of held, because the card has already resized by then and pretending otherwise was a dead end (we tried holding card heights twice, reverted it twice, and have now written "do not try this a third time" in three separate places).
+
+- **Changed cards tell you who.** Up to three stacked chips with a face, a name and how long ago, then "+2 more". The veil behind them is mixed from the card's *own* text colour, which sounds fussy until you realise the first version was a black wash that looked great on light themes and was completely invisible on dark ones. Deriving it from the text colour means it contrasts by construction on every theme and every note colour, and nobody has to maintain a per-theme table.
+
+- **Deleted cards don't just evaporate.** They dim in place and say who did it — "Meshuga deleted this note", "Meshuga revoked your access" — and they stay exactly where they were until you apply the change. Trashed, permanently deleted and access-revoked arrive by three completely different routes, which we learned the hard way: trashing never touches the note list at all, so for ages a collaborator binning a note showed up on your card as an *edit* while the card silently vanished anyway. Two different lies about one event.
+
+- **Attachments count as changes.** Add an image or a document to a shared note and your collaborators' cards mark up, same as an edit. Drawings and link previews already did this, purely by accident — they live inside the note's document so they tripped the existing machinery for free, while images and documents are database rows that never touch it. So the whole treatment had quietly been tracking "did the note's document change" instead of "did somebody change this note". Those are not the same question and it took a bug report to notice.
+
+  OCR finishing, thumbnails generating and office files converting deliberately stay anonymous, because *nobody did those*. A card announcing "Meshuga changed this note" because a queue drained twenty minutes later would be worse than silence.
+
+- **Trashing a note you've shared now asks first, and then actually ends the collaboration.** What it did before was neither one thing nor the other: it hid the note from everyone you'd shared it with while quietly keeping their access, so restoring it resurrected a collaboration everybody had mentally closed, with no announcement. Now you get a dialog that leads with the bit nobody predicts — "move to trash" *means* reversible, so the surprise isn't the trashing, it's that it's reversible for you and final for them. It names up to three people and counts the rest, revokes them, *then* trashes. Revoke first is deliberate: the other order leaves a binned note with live collaborators attached, which is invisible and exactly backwards.
+
+### Fixed
+- **A database hiccup could blank your notes, and this is the one that actually matters.** When the server loaded a note it read the saved copy from Postgres, and if that read threw it just... carried on. Shrugged. Started the note empty and let clients sync into it. There's even a comment explaining the reasoning, which was wrong.
+
+  That is the exact state behind 23 notes getting wiped in a 27-second window a few days ago: an empty document in memory while the real content sat in the row, waiting to be overwritten by it. One dropped connection was enough.
+
+  There was already a guard refusing to save a *completely* empty note over a real one. Good, but not nearly good enough — the genuinely frightening version is clients connecting to the empty room, deciding they've got the server's copy, and syncing their own *partial* state in. What lands then is a perfectly plausible-looking document that no size check on earth would reject. So now a failed read poisons the room: it throws, the connection closes, the client reconnects with backoff, and the half-loaded doc gets dropped *without* being saved. A note that won't open for a few seconds is a visible, fixable problem. Silent divergence is neither, and we've already paid for it once.
+
+- **Seven notes clawed their way back out of the trash after a cache clear.** Not actually back — just their tombstones, sitting there demanding to be dismissed for deletions applied days earlier.
+
+  This one is a proper trap and it looked completely reasonable in the source. Asking Yjs "is this note trashed?" by reading `keysChanged` and the current value gives you *identical* answers for "somebody just binned this" and "a note that was already in the bin finished loading". Identical. So every already-trashed note announced itself as a brand-new deletion the moment its document arrived, and clearing your cache made it worse, because that guarantees every note takes the cold-load path. Five of us would have read that code and seen nothing wrong with it. The fix is to read what *changed* (`action`, `oldValue`) rather than what things are *now*, and there's a test file whose entire job is to stop anyone simplifying it back.
+
+- **Your own notes were hidden from you for ten seconds.** Make a note on your laptop, pick up your phone, and there's a chip telling you about a change instead of your note. Because the note arrived with no sender's name on it — a note records *when* it was made and, until now, nothing whatsoever about *who* made it. A separate message turned up ten seconds later saying "one of those was yours" without mentioning *which* one, and the app was left matching the two up by timing like some kind of sad detective.
+
+  Three separate bugs came out of that single dumb gap, and every attempt to fix it by tuning the window broke something else somewhere else: a tombstone for a revoked share that deleted itself ten seconds after appearing, and a collaborator's deletion that deleted itself after **757 milliseconds**. The actual fix was to stop guessing and write the name on the note. It travels with the note, it names exactly one note, it survives a reload, and it behaves the same on fibre and on two bars in a car park.
+
+- **Note and workspace IDs were being broadcast to everyone connected to the server.** Every image upload, document upload, link preview and OCR progress tick published an event with no recipient list — and an empty recipient list doesn't mean "tell nobody", it means "tell everybody". Not note *content*, but still: identifiers for other people's notes, going to clients with no access to the workspace they're in, which is quite enough to tell you who's working on what and when.
+
+  The galling part is that the equivalent note-change path was hardened against this ages ago and carries a comment explaining why. The media path just never got the same treatment. Two copies of one security rule, one of them cared for and the other not existing at all — so they now share a single copy and `null` means "we couldn't find out" and nothing gets published at all.
+
+- **Restored notes came back wearing other people's faces.** Trash a note that two collaborators had edited, restore it, and there were their chips and the gradient, naming two people who no longer had access to it. Trashing now clears whatever was marked on a note — it's attention paid, the same reason opening one clears it — and restoring clears it too, read off the note's own data rather than off the restore button, because there are *five* restore buttons and one other place that bins a note directly. Six places to remember is how this project loses afternoons.
+
+- **Your own note's collaborator list lied to you after you'd removed everyone.** Revoking on the server doesn't tell your own browser anything, and the card chip and collaborator modal both read a cached copy, so the note went on cheerfully listing people who'd been removed minutes ago. Not the server's fault for once — its listing filters revoked collaborators perfectly well. We just never told the client to go and look again.
+
+- **"Loading 0 of 27 notes" on a fast connection.** The splash counted rooms that had *connected* rather than rooms that had actually *arrived*, which is a bit like counting letters by how many envelopes you've opened.
+
+### Changed
+- **The empty-note guard now tells you which bug it caught.** When it refuses a write it reports whether the document was emptied *after* loading or never loaded at all — completely different bugs with no overlap in where you'd look — plus the connection count, how long ago the load was, and how many times it's fired for that room. The original incident destroyed its own evidence and we are not doing that twice.
+
+- **Offline-first and magic numbers got written down properly** in `PROJECT_PHILOSOPHY.md`. The short version: this app runs on a gigabit desktop and on a phone with two bars, so a delay tuned on the first is a silent defect on the second — nothing throws, nothing logs, it just quietly stops working for whoever has the worse connection. A timer that describes something human ("they've stopped typing") is fine. A timer standing in for a missing piece of information is a bug that hasn't gone off yet, and the fix is to go and find the missing information.
+
+### Dev notes
+- `npm test` is at **623 passing**, up from 372 when this work started. A good chunk of those exist specifically to stop a previous fix being "simplified" back into the bug it fixed.
+- The `?syncDiag=1` report has a new **PENDING CHANGES** section showing every decision the change-tracking made, in order. Four confident source-reading diagnoses were wrong during this work and every single one was settled by a measurement, so now the measurement is one copy-paste away instead of a console-diving expedition on a phone.
+
 ## 1.23.0 - 2026-10-13
 
 ### Fixed
