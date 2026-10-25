@@ -929,9 +929,24 @@ if (persistAdapter) {
 			bindState: (docName, yDoc) => {
 				// Kept on the room so a new connection can wait for the saved copy to load before
 				// answering its client (see attachRoomConnection in the /yjs connection handler).
+				//
+				// A REJECTION here means the stored copy could not be read, so the room is empty
+				// when it should not be. That is recorded on the doc rather than rethrown: the
+				// promise y-websocket gets must still resolve, or the rejection surfaces as an
+				// unhandled one somewhere inside its own plumbing. attachRoomConnection reads the
+				// flag and refuses to serve the room.
 				const loaded = persistAdapter.bindState(docName, yDoc);
-				yDoc.__fnLoaded = Promise.resolve(loaded).catch(() => undefined);
-				return loaded;
+				yDoc.__fnLoaded = Promise.resolve(loaded).then(
+					() => { yDoc.__fnLoadFailed = false; },
+					(err) => {
+						yDoc.__fnLoadFailed = true;
+						console.error(
+							`[server] room ${docName} failed to load its saved copy; refusing to serve it empty:`,
+							err && err.message ? err.message : String(err)
+						);
+					}
+				);
+				return yDoc.__fnLoaded;
 			},
 			writeState: (docName, yDoc) => {
 				// The exact line the resurrection happened on. Both callers of writeState go
@@ -1510,6 +1525,29 @@ wss.on('connection', (conn, req) => {
 			const current = getYDoc(docName, options.gc);
 			if (current === doc) break;
 			doc = current;
+		}
+		if (doc.__fnLoadFailed) {
+			/**
+			 * The saved copy did not load, so this room is empty when it should not be. Serving it
+			 * would answer the client's sync step 1 with nothing, which the app reads as "I have
+			 * the server's copy" - and from there the client happily syncs its own partial state
+			 * into the void and that becomes the new truth.
+			 *
+			 * Closing instead costs a reconnect. y-websocket retries with backoff, so a database
+			 * blip becomes a slightly slower note rather than a silently emptied one.
+			 */
+			if (docs.get(docName) === doc && doc.conns.size === 0) {
+				// Dropped WITHOUT writeState on purpose: persisting a room that never loaded is
+				// the exact thing being prevented. The next connection binds afresh.
+				docs.delete(docName);
+				try {
+					doc.destroy();
+				} catch {
+					// Already gone; nothing to clean up.
+				}
+			}
+			conn.close(1011, 'room failed to load, please reconnect');
+			return;
 		}
 		if (conn.readyState !== WS_READY_STATE_OPEN) {
 			// The client left while the room was loading. If nobody else is in it, save and release it

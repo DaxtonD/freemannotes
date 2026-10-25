@@ -470,18 +470,28 @@ class YjsPersistenceAdapter {
 				}
 			} catch (err) {
 				console.error(`[persist] PostgreSQL read failed for room=${docName}:`, err.message);
-				// Do not throw — let the doc start empty and sync from clients.
-				//
-				// Worth being honest about what this means: the in-memory doc is now EMPTY while
-				// real content sits in the database. That is precisely the state the empty-document
-				// guard in _persistDoc exists to stop being written back, so the outcome is
-				// recorded for it to report.
+				/**
+				 * THROW. This used to carry on - "let the doc start empty and sync from clients" -
+				 * which leaves an empty in-memory document while the real content sits in the row.
+				 * That is the exact state behind 23 notes being blanked, and one dropped
+				 * connection is enough to produce it.
+				 *
+				 * The empty-document guard catches the fully-empty write. It cannot catch the
+				 * worse version: clients connect to the empty room, sync their own partial state
+				 * into it, and the result is a plausible-looking document that no byte test will
+				 * ever refuse.
+				 *
+				 * A room that will not open is a visible, recoverable failure - the client
+				 * reconnects with backoff and the user waits a moment longer. Silent divergence is
+				 * neither visible nor recoverable.
+				 */
 				this._bindOutcome.set(docName, {
 					startedAt: Date.now(),
 					source: 'read-failed',
 					bytes: 0,
 					error: err && err.message ? String(err.message).slice(0, 200) : 'unknown',
 				});
+				throw err;
 			}
 		}
 
@@ -712,6 +722,29 @@ class YjsPersistenceAdapter {
 		if (isMarkupRoomName(docName)) return this._persistMarkupDoc(docName, yDoc);
 		const workspaceId = await this._workspaceIdForDocName(docName);
 
+		/**
+		 * Never write back a document whose saved copy failed to load.
+		 *
+		 * The guarantee lives here rather than only at the connection layer, because this is where
+		 * data actually becomes permanent - a debounced write, a last-disconnect flush or a
+		 * shutdown sweep all arrive through this one function. Whatever is in memory for a
+		 * poisoned room is at best incomplete, and overwriting good stored content with it is the
+		 * whole failure mode being closed off.
+		 */
+		const bindOutcome = this._bindOutcome.get(docName);
+		if (bindOutcome && bindOutcome.source === 'read-failed') {
+			console.error(
+				`[persist] REFUSED to write room=${docName} — its stored copy never loaded`
+				+ ` (${bindOutcome.error}). Whatever is in memory is incomplete; the row is left alone.`
+			);
+			logEvent('YJS_PERSIST_REFUSED_UNLOADED', {
+				...getRoomDebugContext(docName),
+				event: 'refused-unloaded-write',
+				bindError: bindOutcome.error,
+			});
+			return;
+		}
+
 		// Encode the full document state as a single binary blob.
 		const state = Buffer.from(Y.encodeStateAsUpdate(yDoc));
 		const stateVector = Buffer.from(Y.encodeStateVector(yDoc));
@@ -748,13 +781,13 @@ class YjsPersistenceAdapter {
 				const bind = this._bindOutcome.get(docName) || null;
 				const refusals = (this._emptyRefusalCounts.get(docName) || 0) + 1;
 				this._emptyRefusalCounts.set(docName, refusals);
+				// A read-failed room never reaches here - the unloaded-write guard above returns
+				// first - so that case is deliberately absent rather than listed and unreachable.
 				const diagnosis = !bind
 					? 'NEVER BOUND — this doc was never loaded by this adapter, so something is persisting a document it never hydrated'
-					: bind.source === 'read-failed'
-						? `LOAD FAILED (${bind.error}) — the doc started empty because the database read threw; this is the most likely cause`
-						: bind.source === 'empty'
-							? 'LOADED EMPTY — bindState found no stored state, yet the row has content now, so the row was written between bind and here'
-							: `LOADED OK from ${bind.source} (${bind.bytes} bytes) — the doc HAD content and lost it afterwards; look at what clears root types`;
+					: bind.source === 'empty'
+						? 'LOADED EMPTY — bindState found no stored state, yet the row has content now, so the row was written between bind and here'
+						: `LOADED OK from ${bind.source} (${bind.bytes} bytes) — the doc HAD content and lost it afterwards; look at what clears root types`;
 				// Loud on purpose. This is the trap that turns an unreproducible mystery into a
 				// caught event — and the line below is the whole point of it: it says whether the
 				// document was emptied AFTER loading or never loaded at all, which are completely

@@ -172,19 +172,20 @@ describe('the refusal explains itself', () => {
 		assert.equal(prisma.calls.upserts.length, 0, 'and still refuses the write');
 	});
 
-	it('names a failed database read as the likely cause, with its message', async () => {
-		// The path that actually exists: bindState catches a read error and lets the doc start
-		// empty. If that is what happened, the refusal should say so rather than leaving it to be
-		// rediscovered from first principles.
+	it('hands a failed read to the earlier guard instead', async () => {
+		// This used to be the empty-document guard's job, and its diagnosis said so. It no longer
+		// gets the chance: a room whose read failed is refused before the byte test, because the
+		// danger there is not an empty write but a PARTIAL one, which no size check can catch.
 		const prisma = fakePrisma(4096);
 		const adapter = adapterFor(prisma);
 		adapter._bindOutcome.set(ROOM, {
 			startedAt: Date.now(), source: 'read-failed', bytes: 0, error: 'connection terminated',
 		});
 		const output = await captureError(() => adapter._persistDoc(ROOM, emptyDoc()));
-		assert.match(output, /LOAD FAILED/);
+		assert.match(output, /never loaded/);
 		assert.match(output, /connection terminated/);
-		assert.match(output, /most likely cause/);
+		assert.doesNotMatch(output, /EMPTY document/, 'the earlier guard owns this case now');
+		assert.equal(prisma.calls.upserts.length, 0);
 	});
 
 	it('flags a doc that was never bound at all', async () => {
@@ -223,5 +224,86 @@ describe('the refusal explains itself', () => {
 		const prisma = fakePrisma(4096);
 		const output = await captureError(() => adapterFor(prisma)._persistDoc(ROOM, docWithContent('hello')));
 		assert.equal(output, '');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A room whose saved copy never loaded must never be written back.
+//
+// bindState's PostgreSQL read used to catch its error and carry on, leaving an
+// empty in-memory document while the real content sat in the row. That is the
+// state behind 23 blanked notes, and one dropped connection produces it.
+//
+// The empty-document guard above catches the FULLY empty write. It cannot catch
+// the worse case: clients connect to the empty room, sync their own partial
+// state in, and the result is a plausible document that no byte test will
+// refuse. So the refusal has to key off "this room never loaded", not off size.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('a room that never loaded is never written back', () => {
+	const poisoned = (adapter) => adapter._bindOutcome.set(ROOM, {
+		startedAt: Date.now(), source: 'read-failed', bytes: 0, error: 'connection terminated',
+	});
+
+	it('refuses even a doc full of content', async () => {
+		// THE case the byte test cannot see. This document looks perfectly healthy; it is just
+		// not the whole note, because the stored half never arrived.
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		poisoned(adapter);
+		await adapter._persistDoc(ROOM, docWithContent('half a note, synced from one client'));
+		assert.equal(prisma.calls.upserts.length, 0, 'the stored row must be left alone');
+	});
+
+	it('refuses an empty doc too', async () => {
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		poisoned(adapter);
+		await adapter._persistDoc(ROOM, emptyDoc());
+		assert.equal(prisma.calls.upserts.length, 0);
+	});
+
+	it('says why, naming the read error', async () => {
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		poisoned(adapter);
+		const lines = [];
+		const original = console.error;
+		console.error = (...args) => { lines.push(args.join(' ')); };
+		try {
+			await adapter._persistDoc(ROOM, docWithContent('hello'));
+		} finally {
+			console.error = original;
+		}
+		const output = lines.join('\n');
+		assert.match(output, /never loaded/);
+		assert.match(output, /connection terminated/);
+	});
+
+	it('still writes normally once a later bind succeeds', async () => {
+		// The poison is per-load, not permanent. A reconnect that reads the row properly must be
+		// able to save again, or a single blip would silence the note forever.
+		const prisma = fakePrisma(4096);
+		const adapter = adapterFor(prisma);
+		poisoned(adapter);
+		adapter._bindOutcome.set(ROOM, { startedAt: Date.now(), source: 'postgres', bytes: 4096, error: null });
+		await adapter._persistDoc(ROOM, docWithContent('hello'));
+		assert.equal(prisma.calls.upserts.length, 1);
+	});
+
+	it('does not refuse a room it simply has no record of', async () => {
+		// No bind record is the ordinary state for plenty of code paths. Only an actual recorded
+		// failure blocks a write; absence of evidence must not become evidence.
+		const prisma = fakePrisma(4096);
+		await adapterFor(prisma)._persistDoc(ROOM, docWithContent('hello'));
+		assert.equal(prisma.calls.upserts.length, 1);
+	});
+
+	it('does not refuse a room that genuinely had nothing stored', async () => {
+		const prisma = fakePrisma(null);
+		const adapter = adapterFor(prisma);
+		adapter._bindOutcome.set(ROOM, { startedAt: Date.now(), source: 'empty', bytes: 0, error: null });
+		await adapter._persistDoc(ROOM, docWithContent('a brand new note'));
+		assert.equal(prisma.calls.upserts.length, 1);
 	});
 });
